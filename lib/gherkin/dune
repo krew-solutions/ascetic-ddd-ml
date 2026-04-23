@@ -1,0 +1,11 @@
+(library
+ (name ascetic_gherkin)
+ (public_name ascetic_ddd.gherkin)
+ (libraries re alcotest)
+ (preprocess
+  (pps ppx_deriving.show ppx_deriving.eq)))
+
+(ocamllex gherkin_lexer)
+
+(menhir
+ (modules gherkin_parser))
