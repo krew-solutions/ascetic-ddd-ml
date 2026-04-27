@@ -1,0 +1,6 @@
+(library
+ (name ascetic_saga)
+ (public_name ascetic_ddd.saga)
+ (libraries yojson)
+ (preprocess
+  (pps ppx_deriving.show ppx_deriving.eq)))

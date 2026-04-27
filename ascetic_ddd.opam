@@ -16,6 +16,7 @@ depends: [
   "uuidm" {>= "0.9"}
   "fmt" {>= "0.9"}
   "re" {>= "1.11"}
+  "yojson" {>= "1.4"}
   "menhir"
   "ppx_deriving"
   "alcotest"
