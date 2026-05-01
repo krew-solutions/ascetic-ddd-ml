@@ -1,0 +1,4 @@
+(library
+ (name ascetic_gherkin_edsl)
+ (public_name ascetic_ddd.gherkin_edsl)
+ (libraries alcotest))
