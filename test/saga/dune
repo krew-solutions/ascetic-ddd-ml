@@ -1,0 +1,18 @@
+(tests
+ (names
+  test_activity
+  test_activity_host
+  test_activity_resolver
+  test_examples
+  test_fallback_activity
+  test_parallel_activity
+  test_routing_slip
+  test_routing_slip_serialization
+  test_serialization_example
+  test_work_item
+  test_work_item_arguments
+  test_work_log
+  test_work_result)
+ (libraries ascetic_saga alcotest yojson eio eio_main unix)
+ (preprocess
+  (pps ppx_deriving.show ppx_deriving.eq ppx_deriving.ord)))

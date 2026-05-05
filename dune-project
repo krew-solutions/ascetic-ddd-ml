@@ -39,6 +39,10 @@
    (>= 1.11))
   (yojson
    (>= 1.4))
+  (eio
+   (>= 1.0))
+  (eio_main
+   (>= 1.0))
   menhir
   ppx_deriving
   alcotest

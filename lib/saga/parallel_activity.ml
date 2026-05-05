@@ -6,17 +6,20 @@
     backward paths.
 
     Behaviour:
-    - drives every branch routing slip;
-    - fail-fast: on the first failure, every branch (completed or partial)
-      is compensated;
+    - drives every branch routing slip concurrently (Eio fibers);
+    - fail-fast: when at least one branch fails, every branch (completed or
+      partial) is compensated;
     - on rollback of the surrounding saga, every branch is compensated.
 
     The branches are captured by a closure rather than stored in
     [Work_item_arguments] (which is required to be JSON-shaped). The
-    OCaml port runs branches sequentially; this preserves the
-    "compensate-everything-on-failure" semantics without depending on a
-    concurrency runtime. Adapt to Lwt or Eio if true concurrency is
-    needed. *)
+    resulting activity is therefore bound to a single saga instance and
+    is not transmitted over the bus.
+
+    Concurrency requires an Eio runtime: callers must invoke
+    [Routing_slip.process_next] from within an [Eio_main.run] (or other
+    Eio backend) so that [Eio.Fiber.List.map] / [Eio.Fiber.List.iter]
+    can fork fibers. *)
 
 let name = "ParallelActivity"
 let work_item_queue_address = "sb://./parallel"
@@ -36,7 +39,7 @@ let execute_branch (branch : Routing_slip.t) : bool =
   drive ()
 
 let compensate_branches (branches : Routing_slip.t list) : unit =
-  List.iter
+  Eio.Fiber.List.iter
     (fun branch ->
       while Routing_slip.is_in_progress branch do
         let _ = Routing_slip.undo_last branch in ()
@@ -52,7 +55,7 @@ let make ~(branches : Routing_slip.t list) : Activity.t =
       | None -> assert false
   in
   let do_work _wi =
-    let outcomes = List.map execute_branch branches in
+    let outcomes = Eio.Fiber.List.map execute_branch branches in
     let all_succeeded = List.for_all (fun ok -> ok) outcomes in
     if all_succeeded then
       Some (Work_log.create_with_factory ~factory ~result:Work_result.empty)

@@ -1,6 +1,12 @@
 (library
  (name ascetic_saga)
  (public_name ascetic_ddd.saga)
- (libraries yojson)
+ (libraries yojson eio)
  (preprocess
   (pps ppx_deriving.show ppx_deriving.eq)))
+
+; Modules in lib/saga/examples/ are part of the same library namespace
+; (matching Python's ascetic_ddd/saga/examples/ sub-package). The
+; "unqualified" mode keeps them at the top level of Ascetic_saga so
+; they can freely reference Routing_slip, Activity_resolver, etc.
+(include_subdirs unqualified)

@@ -32,3 +32,10 @@ module Activity_host = Activity_host
 module Serializable = Serializable
 module Fallback_activity = Fallback_activity
 module Parallel_activity = Parallel_activity
+
+(** Example activities and runnable demo, mirroring
+    [ascetic_ddd/saga/examples/] in the Python port. *)
+module Reserve_car_activity = Reserve_car_activity
+module Reserve_hotel_activity = Reserve_hotel_activity
+module Reserve_flight_activity = Reserve_flight_activity
+module Serialization_example = Serialization_example
