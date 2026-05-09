@@ -14,7 +14,8 @@ Domain-Driven Design in a functional style.
 - **Outbox** (`ascetic_ddd.outbox`): transactional outbox pattern for
   reliable message publishing — Postgres-backed, ordered via `xid8`,
   with consumer groups, URI-based partitioning and an effect-handler
-  iterator.
+  iterator. See [`lib/outbox/README.md`](./lib/outbox/README.md) for
+  usage.
 - **Saga** (`ascetic_ddd.saga`): routing-slip saga pattern for
   long-running workflows with compensation.
 - **Specification** (`ascetic_ddd.spec`): specification-pattern DSL with
