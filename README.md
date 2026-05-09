@@ -8,7 +8,15 @@ Domain-Driven Design in a functional style.
 ## What's included
 
 - **Core** (`ascetic_ddd`): `Result_ext`, `Decimal`, `Bounded_int`,
-  `Entity_id`, `Clock`, `Domain_event`, `Aggregate_root`, `Unit_of_work`.
+  `Entity_id`, `Clock`, `Domain_event`, `Aggregate_root`.
+- **Unit of Work** (`ascetic_ddd.unit_of_work`): the abstract
+  `Unit_of_work.S` signature plus a Caqti-backed implementation.
+- **Outbox** (`ascetic_ddd.outbox`): transactional outbox pattern for
+  reliable message publishing — Postgres-backed, ordered via `xid8`,
+  with consumer groups, URI-based partitioning and an effect-handler
+  iterator.
+- **Saga** (`ascetic_ddd.saga`): routing-slip saga pattern for
+  long-running workflows with compensation.
 - **Specification** (`ascetic_ddd.spec`): specification-pattern DSL with
   parser, evaluator and SQL translator.
 - **Encryption** (`ascetic_ddd.encryption`): GDPR-friendly crypto-shredding
@@ -53,6 +61,40 @@ end)
 dune build
 dune runtest
 ```
+
+## Tests
+
+Most tests are in-process and run with no external dependencies. The
+outbox suite (`test/outbox/`) is an integration test against a real
+PostgreSQL — it is skipped automatically when `TEST_DATABASE_URL` is not
+set, so `dune runtest` is always green out of the box.
+
+### Local run with Docker
+
+A `docker-compose.yml` at the repo root spins up a Postgres 16 instance
+on `localhost:55432` (host port chosen to avoid colliding with a system
+PG on the default 5432; user `test`, password `test`, database `test`,
+ephemeral `tmpfs` storage):
+
+```sh
+docker compose up -d
+export TEST_DATABASE_URL=postgresql://test:test@localhost:55432/test
+dune runtest
+docker compose down
+```
+
+### Continuous integration
+
+`.github/workflows/test.yml` runs the full suite on every push to `main`
+and on pull requests. It:
+
+1. Starts a `postgres:16` service container with the same credentials as
+   `docker-compose.yml`.
+2. Installs `libpq-dev` (needed by `caqti-driver-postgresql`).
+3. Sets up OCaml 5.4 via `ocaml/setup-ocaml@v3`.
+4. Runs `opam install . --deps-only --with-test`, then `dune build` and
+   `dune runtest` with `TEST_DATABASE_URL` pointing at the service
+   container.
 
 ## License
 

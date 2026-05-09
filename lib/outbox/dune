@@ -1,0 +1,11 @@
+(library
+ (name ascetic_outbox)
+ (public_name ascetic_ddd.outbox)
+ (libraries
+  ascetic_ddd.unit_of_work
+  caqti
+  caqti-eio
+  eio
+  yojson
+  ptime
+  fmt))

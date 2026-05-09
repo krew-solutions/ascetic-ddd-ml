@@ -1,0 +1,14 @@
+(test
+ (name test_outbox)
+ (libraries
+  ascetic_ddd.outbox
+  ascetic_ddd.unit_of_work
+  alcotest
+  caqti
+  caqti-eio
+  caqti-eio.unix
+  caqti-driver-postgresql
+  eio
+  eio_main
+  yojson
+  uri))

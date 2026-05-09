@@ -10,4 +10,3 @@ module Entity_id = Entity_id
 module Clock = Clock
 module Domain_event = Domain_event
 module Aggregate_root = Aggregate_root
-module Unit_of_work = Unit_of_work
