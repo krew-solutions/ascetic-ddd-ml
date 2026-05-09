@@ -1,0 +1,4 @@
+(library
+ (name ascetic_unit_of_work)
+ (public_name ascetic_ddd.unit_of_work)
+ (libraries caqti caqti-eio))
