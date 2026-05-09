@@ -23,7 +23,7 @@
  (name ascetic_ddd)
  (synopsis "Reusable DDD building blocks for OCaml")
  (description
-  "A lightweight library providing foundational types and patterns for Domain-Driven Design in a functional style: bounded integers, decimals, entity IDs, clocks, domain events, aggregate roots, unit-of-work (with a Caqti-backed implementation), a transactional outbox, a specification DSL, GDPR-friendly encryption primitives, and a pure-OCaml Gherkin runner.")
+  "A lightweight library providing foundational types and patterns for Domain-Driven Design in a functional style: bounded integers, decimals, entity IDs, clocks, domain events, aggregate roots, unit-of-work (with a Caqti-backed implementation), transactional outbox + inbox, a specification DSL, GDPR-friendly encryption primitives, and a pure-OCaml Gherkin runner.")
  (depends
   (ocaml
    (>= 5.4.0))

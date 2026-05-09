@@ -4,6 +4,6 @@
     of the design. *)
 
 module Outbox_message = Outbox_message
-module Connection_provider = Connection_provider
+module Connection_provider = Ascetic_unit_of_work.Caqti_connection_provider
 module Outbox_port = Outbox_port
 module Outbox = Outbox

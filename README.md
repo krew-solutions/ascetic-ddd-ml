@@ -16,6 +16,11 @@ Domain-Driven Design in a functional style.
   with consumer groups, URI-based partitioning and an effect-handler
   iterator. See [`lib/outbox/README.md`](./lib/outbox/README.md) for
   usage.
+- **Inbox** (`ascetic_ddd.inbox`): transactional inbox pattern for
+  reliable ingestion — idempotent on
+  `(tenant_id, stream_type, stream_id, stream_position)`, causal
+  dependencies, URI/stream partitioning. See
+  [`lib/inbox/README.md`](./lib/inbox/README.md) for usage.
 - **Saga** (`ascetic_ddd.saga`): routing-slip saga pattern for
   long-running workflows with compensation.
 - **Specification** (`ascetic_ddd.spec`): specification-pattern DSL with

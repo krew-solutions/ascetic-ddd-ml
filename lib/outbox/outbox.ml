@@ -17,7 +17,7 @@ type uow = Uow.t
 type subscriber = Outbox_message.t -> (unit, string) result
 
 type t = {
-  provider : Connection_provider.t;
+  provider : Ascetic_unit_of_work.Caqti_connection_provider.t;
   outbox_table : string;
   offsets_table : string;
   batch_size : int;
@@ -275,14 +275,14 @@ let dispatch ?(consumer_group = "") ?(uri = "") ?(worker_id = 0)
   in
   (* Ensure the consumer group row exists before we try to FOR UPDATE it. *)
   let ensure_result =
-    Connection_provider.with_connection t.provider (fun conn ->
+    Ascetic_unit_of_work.Caqti_connection_provider.with_connection t.provider (fun conn ->
         let uow = Uow.of_connection conn in
         ensure_consumer_group t uow ~consumer_group:effective_group ~uri)
   in
   match ensure_result with
   | Error e -> Error e
   | Ok () ->
-      Connection_provider.with_connection t.provider (fun conn ->
+      Ascetic_unit_of_work.Caqti_connection_provider.with_connection t.provider (fun conn ->
           in_transaction conn (fun conn ->
               let uow = Uow.of_connection conn in
               match
@@ -441,7 +441,7 @@ module Iter = struct
 
   let body t ~consumer_group ~uri ~clock ~poll_interval ~stop () =
     let _ =
-      Connection_provider.with_connection t.provider (fun conn ->
+      Ascetic_unit_of_work.Caqti_connection_provider.with_connection t.provider (fun conn ->
           let uow = Uow.of_connection conn in
           ensure_consumer_group t uow ~consumer_group ~uri)
     in
@@ -450,7 +450,7 @@ module Iter = struct
       else
         let had_messages = ref false in
         let _ =
-          Connection_provider.with_connection t.provider (fun conn ->
+          Ascetic_unit_of_work.Caqti_connection_provider.with_connection t.provider (fun conn ->
               in_transaction conn (fun conn ->
                   let uow = Uow.of_connection conn in
                   match

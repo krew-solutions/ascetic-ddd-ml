@@ -21,7 +21,7 @@ val create :
   ?outbox_table:string ->
   ?offsets_table:string ->
   ?batch_size:int ->
-  provider:Connection_provider.t ->
+  provider:Ascetic_unit_of_work.Caqti_connection_provider.t ->
   unit ->
   t
 (** [create ~provider ()] builds an outbox.

@@ -10,3 +10,8 @@ module Entity_id = Entity_id
 module Clock = Clock
 module Domain_event = Domain_event
 module Aggregate_root = Aggregate_root
+
+(* Sub-libraries [ascetic_ddd.unit_of_work], [ascetic_ddd.outbox],
+   [ascetic_ddd.inbox], [ascetic_ddd.saga], [ascetic_ddd.encryption],
+   [ascetic_ddd.spec], and [ascetic_ddd.gherkin] are exposed separately;
+   add them to the [libraries] field of your dune file individually. *)

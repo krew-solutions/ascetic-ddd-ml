@@ -1,0 +1,11 @@
+(library
+ (name ascetic_inbox)
+ (public_name ascetic_ddd.inbox)
+ (libraries
+  ascetic_ddd.unit_of_work
+  caqti
+  caqti-eio
+  eio
+  yojson
+  ptime
+  fmt))

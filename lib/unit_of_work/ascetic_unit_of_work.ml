@@ -6,3 +6,4 @@
 
 module Unit_of_work = Unit_of_work
 module Caqti_unit_of_work = Caqti_unit_of_work
+module Caqti_connection_provider = Caqti_connection_provider
