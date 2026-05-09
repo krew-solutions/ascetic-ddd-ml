@@ -1,5 +1,5 @@
-(test
- (name test_inbox)
+(tests
+ (names test_inbox test_message)
  (libraries
   ascetic_ddd.inbox
   ascetic_ddd.unit_of_work
