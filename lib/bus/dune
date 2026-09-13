@@ -1,0 +1,3 @@
+(library
+ (name ascetic_bus)
+ (public_name ascetic_ddd.bus))

@@ -21,6 +21,11 @@ Domain-Driven Design in a functional style.
   `(tenant_id, stream_type, stream_id, stream_position)`, causal
   dependencies, URI/stream partitioning. See
   [`lib/inbox/README.md`](./lib/inbox/README.md) for usage.
+- **Bus** (`ascetic_ddd.bus`, `ascetic_ddd.bus.in_memory`):
+  scheme-dispatched publish/subscribe over opaque wire payloads —
+  URI-routed adapters, consumer groups, and an `Eio`-based in-memory
+  adapter for single-process deployments. See
+  [`lib/bus/README.md`](./lib/bus/README.md) for usage.
 - **Saga** (`ascetic_ddd.saga`): routing-slip saga pattern for
   long-running workflows with compensation.
 - **Specification** (`ascetic_ddd.spec`): specification-pattern DSL with

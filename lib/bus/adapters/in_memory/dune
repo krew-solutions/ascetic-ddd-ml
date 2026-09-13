@@ -1,0 +1,4 @@
+(library
+ (name ascetic_bus_in_memory)
+ (public_name ascetic_ddd.bus.in_memory)
+ (libraries ascetic_ddd.bus eio logs))
