@@ -169,14 +169,29 @@ match Inbox.dispatch inbox subscriber with
 ### `Inbox.run` (long-running daemon with concurrency)
 
 ```ocaml
-Inbox.run
-  ~clock:(Eio.Stdenv.mono_clock env)
-  ~concurrency:3                       (* requires a pool provider *)
-  ~poll_interval:0.5
-  ~stop:(fun () -> !stop_flag)
-  inbox
-  subscriber
+let clock = Eio.Stdenv.mono_clock env in
+let rec supervise () =
+  match
+    Inbox.run ~clock
+      ~concurrency:3                   (* requires a pool provider *)
+      ~poll_interval:0.5 ~stop:(fun () -> !stop_flag) inbox subscriber
+  with
+  | Ok () -> ()                        (* stopped *)
+  | Error e ->
+      Logs.err (fun m -> m "inbox dispatcher: %s" e);
+      if not !stop_flag then (
+        Eio.Time.Mono.sleep clock 1.0;
+        supervise ())
+in
+supervise ()
 ```
+
+`run` returns `Ok ()` once stopped. The first error of any loop — a
+database failure, a subscriber returning `Error` — stops every loop (a
+loop in the middle of a message finishes it first) and comes back as
+`Error`. The dispatcher does not retry on its own and does not hide
+the error: retrying is the caller's policy, as in the supervisor above,
+and the unprocessed message is picked up by the next `run`.
 
 ---
 

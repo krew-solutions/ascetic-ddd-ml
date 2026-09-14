@@ -187,15 +187,29 @@ Long-running daemon with optional fan-out:
 
 ```ocaml
 let stop = ref false in
-Outbox.run
-  ~clock:(Eio.Stdenv.mono_clock env)
-  ~consumer_group:"my-service"
-  ~concurrency:3                       (* requires a pool provider! *)
-  ~poll_interval:0.5
-  ~stop:(fun () -> !stop)
-  outbox
-  subscriber
+let clock = Eio.Stdenv.mono_clock env in
+let rec supervise () =
+  match
+    Outbox.run ~clock ~consumer_group:"my-service"
+      ~concurrency:3                   (* requires a pool provider! *)
+      ~poll_interval:0.5 ~stop:(fun () -> !stop) outbox subscriber
+  with
+  | Ok () -> ()                        (* stopped *)
+  | Error e ->
+      Logs.err (fun m -> m "outbox dispatcher: %s" e);
+      if not !stop then (
+        Eio.Time.Mono.sleep clock 1.0;
+        supervise ())
+in
+supervise ()
 ```
+
+`run` returns `Ok ()` once stopped. The first error of any loop — a
+database failure, a subscriber returning `Error` — stops every loop (a
+loop in the middle of a batch finishes it first) and comes back as
+`Error`. The dispatcher does not retry on its own and does not hide
+the error: retrying is the caller's policy, as in the supervisor above,
+and the rolled-back batch is redelivered by the next `run`.
 
 When `concurrency > 1`, work is partitioned by
 `(hashtext(uri) & 2147483647) % N`, so messages for the same URI always
@@ -294,11 +308,12 @@ let handler _ = stop_flag := true in
 Sys.set_signal Sys.sigint  (Sys.Signal_handle handler);
 Sys.set_signal Sys.sigterm (Sys.Signal_handle handler);
 
-Outbox.run
-  ~clock:(Eio.Stdenv.mono_clock env)
-  ~stop:(fun () -> !stop_flag)
-  outbox
-  subscriber
+match
+  Outbox.run ~clock:(Eio.Stdenv.mono_clock env)
+    ~stop:(fun () -> !stop_flag) outbox subscriber
+with
+| Ok () -> ()
+| Error e -> Logs.err (fun m -> m "outbox dispatcher: %s" e)
 ```
 
 `stop` is checked between batches; the in-flight batch always finishes.
@@ -311,7 +326,9 @@ transaction).
 
 Returning `Error _` from a subscriber rolls back the dispatcher
 transaction — the messages of that batch stay in the outbox and will
-be redelivered on the next `dispatch`. There is no per-message dead
+be redelivered on the next `dispatch`. `run` treats it as its first
+error: it stops and returns the error, and the supervisor around it
+decides when to call `run` again. There is no per-message dead
 letter queue: handle non-recoverable errors inside the subscriber
 (e.g. log + return `Ok` to ack and skip).
 

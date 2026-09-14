@@ -471,7 +471,8 @@ let test_run_with_single_worker env uri () =
   let stop_flag = ref false in
   Eio.Fiber.both
     (fun () ->
-      Outbox.run ~poll_interval:0.01 ~stop:(fun () -> !stop_flag) outbox
+      unwrap
+      @@ Outbox.run ~poll_interval:0.01 ~stop:(fun () -> !stop_flag) outbox
         ~clock:(Eio.Stdenv.mono_clock env)
         (fun msg ->
           let r = recording_subscriber recorder msg in
@@ -515,7 +516,8 @@ let test_run_with_multiple_workers env uri () =
   in
   Eio.Fiber.both
     (fun () ->
-      Outbox.run ~poll_interval:0.01 ~concurrency:3
+      unwrap
+      @@ Outbox.run ~poll_interval:0.01 ~concurrency:3
         ~stop:(fun () -> !stop_flag)
         pool_outbox
         ~clock:(Eio.Stdenv.mono_clock env)
@@ -637,7 +639,8 @@ let test_workers_share_uris_without_gaps_or_overlap env uri () =
   in
   Eio.Fiber.both
     (fun () ->
-      Outbox.run ~poll_interval:0.01 ~concurrency:3
+      unwrap
+      @@ Outbox.run ~poll_interval:0.01 ~concurrency:3
         ~stop:(fun () -> !stop_flag)
         pool_outbox
         ~clock:(Eio.Stdenv.mono_clock env)
@@ -657,6 +660,47 @@ let test_workers_share_uris_without_gaps_or_overlap env uri () =
   in
   Alcotest.(check (list int))
     "every message dispatched exactly once" (List.init total Fun.id) orders
+
+(* The first error of any loop stops every loop and comes back to the
+   caller. [stop] is never set, so [run] returning at all proves the other
+   two loops were stopped; what to do next is the caller's policy. *)
+let test_run_returns_the_first_error env uri () =
+  with_outbox_env env uri @@ fun env conn outbox ->
+  unwrap
+    (publish_in_tx outbox conn
+       (make_message ~message_id:"550e8400-e29b-41d4-a716-446655440080"
+          ~uri:"kafka://orders"
+          ~payload:[ ("type", `String "OrderCreated") ]));
+  Eio.Switch.run @@ fun sw ->
+  let stdenv = (env :> Caqti_eio.stdenv) in
+  let extra_conns = List.init 4 (fun _ -> connect ~sw ~stdenv uri) in
+  let pool_outbox =
+    Outbox.create ~outbox_table ~offsets_table
+      ~provider:(pool_provider extra_conns) ()
+  in
+  let clock = Eio.Stdenv.mono_clock env in
+  let outcome =
+    Eio.Fiber.first
+      (fun () ->
+        `Returned
+          (Outbox.run ~poll_interval:0.01 ~concurrency:3 pool_outbox ~clock
+             (fun _ -> Error "subscriber failure")))
+      (fun () ->
+        Eio.Time.Mono.sleep clock 3.0;
+        `Timed_out)
+  in
+  List.iter
+    (fun c ->
+      let module C = (val c : Caqti_eio.CONNECTION) in
+      let _ = C.disconnect () in
+      ())
+    extra_conns;
+  match outcome with
+  | `Returned result ->
+      Alcotest.(check (result unit string))
+        "the subscriber's error comes back" (Error "subscriber failure") result
+  | `Timed_out ->
+      Alcotest.fail "run did not stop the other loops after the error"
 
 (* -------------------------------------------------------------------------- *)
 (* Test runner                                                                *)
@@ -692,6 +736,8 @@ let cases env uri =
       (test_run_with_multiple_workers env uri);
     Alcotest.test_case "workers_share_uris_without_gaps_or_overlap" `Quick
       (test_workers_share_uris_without_gaps_or_overlap env uri);
+    Alcotest.test_case "run_returns_the_first_error" `Quick
+      (test_run_returns_the_first_error env uri);
     Alcotest.test_case "iterator" `Quick (test_iterator env uri);
     Alcotest.test_case "for_update_prevents_duplicate_processing" `Quick
       (test_for_update_prevents_duplicate_processing env uri);

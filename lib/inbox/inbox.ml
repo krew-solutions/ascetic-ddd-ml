@@ -302,14 +302,25 @@ let dispatch ?(worker_id = 0) ?(num_workers = 1) (t : t) (subscriber : subscribe
 (* run                                                                        *)
 (* -------------------------------------------------------------------------- *)
 
+(* The first error of any loop stops every loop and is returned: retrying
+   is the caller's policy, not the dispatcher's. A loop in the middle of a
+   message finishes it first; a loop asleep between messages wakes at
+   once. *)
 let run ?(process_id = 0) ?(num_processes = 1) ?(concurrency = 1)
     ?(poll_interval = 1.0) ?(stop = fun () -> false) (t : t) ~clock
     (subscriber : subscriber) =
   let effective_total = num_processes * concurrency in
+  let failed, resolve_failed = Eio.Promise.create () in
+  let stopped () = stop () || Eio.Promise.is_resolved failed in
+  let pause () =
+    Eio.Fiber.first
+      (fun () -> Eio.Time.Mono.sleep clock poll_interval)
+      (fun () -> ignore (Eio.Promise.await failed))
+  in
   let worker_loop local_id =
     let effective_id = (process_id * concurrency) + local_id in
     let rec loop () =
-      if stop () then ()
+      if stopped () then ()
       else
         match
           dispatch ~worker_id:effective_id ~num_workers:effective_total t
@@ -317,16 +328,15 @@ let run ?(process_id = 0) ?(num_processes = 1) ?(concurrency = 1)
         with
         | Ok true -> loop ()
         | Ok false ->
-            if not (stop ()) then Eio.Time.Mono.sleep clock poll_interval;
-            if not (stop ()) then loop ()
-        | Error _ ->
-            if not (stop ()) then Eio.Time.Mono.sleep clock poll_interval;
-            if not (stop ()) then loop ()
+            if not (stopped ()) then pause ();
+            if not (stopped ()) then loop ()
+        | Error e -> ignore (Eio.Promise.try_resolve resolve_failed e)
     in
     loop ()
   in
-  if concurrency <= 1 then worker_loop 0
-  else Eio.Fiber.all (List.init concurrency (fun i () -> worker_loop i))
+  (if concurrency <= 1 then worker_loop 0
+   else Eio.Fiber.all (List.init concurrency (fun i () -> worker_loop i)));
+  match Eio.Promise.peek failed with None -> Ok () | Some e -> Error e
 
 (* -------------------------------------------------------------------------- *)
 (* setup / cleanup                                                            *)

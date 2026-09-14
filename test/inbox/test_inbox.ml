@@ -308,7 +308,8 @@ let test_run_with_single_worker env uri () =
   let stop_flag = ref false in
   Eio.Fiber.both
     (fun () ->
-      Inbox.run ~poll_interval:0.01
+      unwrap
+      @@ Inbox.run ~poll_interval:0.01
         ~stop:(fun () -> !stop_flag)
         inbox
         ~clock:(Eio.Stdenv.mono_clock env)
@@ -352,7 +353,8 @@ let test_run_with_multiple_workers env uri () =
   in
   Eio.Fiber.both
     (fun () ->
-      Inbox.run ~poll_interval:0.01 ~concurrency:3
+      unwrap
+      @@ Inbox.run ~poll_interval:0.01 ~concurrency:3
         ~stop:(fun () -> !stop_flag)
         pool_inbox
         ~clock:(Eio.Stdenv.mono_clock env)
@@ -392,7 +394,8 @@ let test_for_update_skip_locked env uri () =
   in
   Eio.Fiber.both
     (fun () ->
-      Inbox.run ~poll_interval:0.01 ~concurrency:3
+      unwrap
+      @@ Inbox.run ~poll_interval:0.01 ~concurrency:3
         ~stop:(fun () -> !stop_flag)
         pool_inbox
         ~clock:(Eio.Stdenv.mono_clock env)
@@ -445,7 +448,8 @@ let test_workers_share_streams_without_gaps_or_overlap env uri () =
   in
   Eio.Fiber.both
     (fun () ->
-      Inbox.run ~poll_interval:0.01 ~concurrency:3
+      unwrap
+      @@ Inbox.run ~poll_interval:0.01 ~concurrency:3
         ~stop:(fun () -> !stop_flag)
         pool_inbox
         ~clock:(Eio.Stdenv.mono_clock env)
@@ -465,6 +469,47 @@ let test_workers_share_streams_without_gaps_or_overlap env uri () =
   in
   Alcotest.(check (list int))
     "every message processed exactly once" (List.init total Fun.id) orders
+
+(* The first error of any loop stops every loop and comes back to the
+   caller. [stop] is never set, so [run] returning at all proves the other
+   two loops were stopped; what to do next is the caller's policy. *)
+let test_run_returns_the_first_error env uri () =
+  with_inbox_env env uri @@ fun env _conn inbox ->
+  unwrap
+    (Inbox.publish inbox
+       (make_message ~stream_position:1 ~stream_id_value:"order-1"
+          ~uri:"kafka://orders"
+          ~payload:[ ("type", `String "OrderCreated") ]
+          ()));
+  Eio.Switch.run @@ fun sw ->
+  let stdenv = (env :> Caqti_eio.stdenv) in
+  let extra_conns = List.init 4 (fun _ -> connect ~sw ~stdenv uri) in
+  let pool_inbox =
+    Inbox.create ~table ~sequence ~provider:(pool_provider extra_conns) ()
+  in
+  let clock = Eio.Stdenv.mono_clock env in
+  let outcome =
+    Eio.Fiber.first
+      (fun () ->
+        `Returned
+          (Inbox.run ~poll_interval:0.01 ~concurrency:3 pool_inbox ~clock
+             (fun _uow _msg -> Error "subscriber failure")))
+      (fun () ->
+        Eio.Time.Mono.sleep clock 3.0;
+        `Timed_out)
+  in
+  List.iter
+    (fun c ->
+      let module C = (val c : Caqti_eio.CONNECTION) in
+      let _ = C.disconnect () in
+      ())
+    extra_conns;
+  match outcome with
+  | `Returned result ->
+      Alcotest.(check (result unit string))
+        "the subscriber's error comes back" (Error "subscriber failure") result
+  | `Timed_out ->
+      Alcotest.fail "run did not stop the other loops after the error"
 
 (* -------------------------------------------------------------------------- *)
 (* Runner                                                                     *)
@@ -487,6 +532,8 @@ let cases env uri =
       (test_run_with_multiple_workers env uri);
     Alcotest.test_case "workers_share_streams_without_gaps_or_overlap" `Quick
       (test_workers_share_streams_without_gaps_or_overlap env uri);
+    Alcotest.test_case "run_returns_the_first_error" `Quick
+      (test_run_returns_the_first_error env uri);
     Alcotest.test_case "for_update_skip_locked" `Quick
       (test_for_update_skip_locked env uri);
   ]

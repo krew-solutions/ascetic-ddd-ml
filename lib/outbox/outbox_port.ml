@@ -52,8 +52,16 @@ module type S = sig
     t ->
     clock:_ Eio.Time.Mono.t ->
     subscriber ->
-    unit
-  (** Continuously dispatch messages until [stop ()] returns [true]. *)
+    (unit, string) result
+  (** Continuously dispatch messages until [stop ()] returns [true], with
+      [concurrency] loops in this process.
+
+      Returns [Ok ()] once stopped. The first error of any loop, a
+      database failure or a subscriber returning [Error], stops every
+      loop, a loop in the middle of a batch finishing it first, and comes
+      back as [Error]. Retrying is the caller's policy: a supervisor that
+      logs the error, waits and calls [run] again redelivers the rolled
+      back batch. *)
 
   val setup : t -> uow -> (unit, string) result
   (** Create the outbox / offsets tables and indexes if they do not
