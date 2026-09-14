@@ -301,7 +301,10 @@ let inbox =
 
 The expression must be valid Postgres SQL evaluated against inbox
 columns — it's plugged directly into
-`hashtext(<expression>) %% N = worker_id`.
+`(hashtext(<expression>) & 2147483647) % N = worker_id`. The sign bit is
+cleared because `hashtext` is a signed integer and `%` keeps the sign of
+its dividend: without that, a key with a negative hash would match no
+worker and its messages would never be processed.
 
 **Always pair `concurrency > 1` with a pool-based provider** — Caqti
 fails loudly if multiple fibers share one connection.

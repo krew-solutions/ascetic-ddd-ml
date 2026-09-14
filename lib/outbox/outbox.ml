@@ -184,6 +184,12 @@ let order_clause t =
      LIMIT %d"
     t.batch_size
 
+(* Which worker a URI belongs to. [hashtext] is a signed [int4] and [%]
+   keeps the sign of its dividend, so a negative hash would match no worker
+   and its messages would never be dispatched; clearing the sign bit keeps
+   the remainder in [0, num_workers). *)
+let worker_filter = "(hashtext(uri) & 2147483647) % ? = ?"
+
 let fetch_messages t (uow : Uow.t) ~consumer_group ~uri ~worker_id ~num_workers
     =
   let open Caqti_request.Infix in
@@ -205,16 +211,13 @@ let fetch_messages t (uow : Uow.t) ~consumer_group ~uri ~worker_id ~num_workers
       Result.map (List.map row_to_message)
         (collect_list uow req (consumer_group, uri, uri, prefix))
   | true, true ->
-      let sql =
-        base ^ "\n  AND hashtext(uri) % ? = ?" ^ tail
-      in
+      let sql = base ^ "\n  AND " ^ worker_filter ^ tail in
       let req = (t4 string string int int ->* row_type) sql in
       Result.map (List.map row_to_message)
         (collect_list uow req (consumer_group, uri, num_workers, worker_id))
   | false, true ->
       let sql =
-        base ^ "\n  AND (uri = ? OR uri LIKE ?)\n  AND hashtext(uri) % ? = ?"
-        ^ tail
+        base ^ "\n  AND (uri = ? OR uri LIKE ?)\n  AND " ^ worker_filter ^ tail
       in
       let req =
         (t6 string string string string int int ->* row_type) sql

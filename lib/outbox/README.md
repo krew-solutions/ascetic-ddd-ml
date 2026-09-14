@@ -188,8 +188,9 @@ Outbox.run
   subscriber
 ```
 
-When `concurrency > 1`, work is partitioned by `hashtext(uri) %% N`,
-so messages for the same URI always land on the same worker.
+When `concurrency > 1`, work is partitioned by
+`(hashtext(uri) & 2147483647) % N`, so messages for the same URI always
+land on the same worker.
 
 ---
 
@@ -330,9 +331,12 @@ processing a distinct partition:
 | 0 | 3 | 0, 1, 2 |
 | 1 | 3 | 3, 4, 5 |
 
-Messages are routed by `hashtext(uri) %% N = worker_id`, so all
-messages for a given URI land on the same worker — order is preserved
-within a URI even under fan-out.
+Messages are routed by `(hashtext(uri) & 2147483647) % N = worker_id`,
+so all messages for a given URI land on the same worker — order is
+preserved within a URI even under fan-out. The sign bit is cleared
+because `hashtext` is a signed integer and `%` keeps the sign of its
+dividend: without that, a URI with a negative hash would match no worker
+and its messages would never be dispatched.
 
 For multi-process deployment (e.g. Kubernetes replicas), set
 `process_id` and `num_processes` to the replica index and replica

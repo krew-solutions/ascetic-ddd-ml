@@ -408,6 +408,64 @@ let test_for_update_skip_locked env uri () =
     extra_conns;
   Alcotest.(check int) "exactly one delivery" 1 (List.length recorder.seen)
 
+(* Every stream lands with exactly one of the workers, including the half
+   whose [hashtext] is negative. With [hashtext(key) % n] alone a negative
+   hash matches no worker, and its messages are never processed; one stream
+   per message makes the gap visible, which a single shared key cannot. *)
+let test_workers_share_streams_without_gaps_or_overlap env uri () =
+  let partition = Ascetic_inbox.Partition_strategy.stream in
+  with_inbox_env ~partition env uri @@ fun env _conn inbox ->
+  let total = 40 in
+  for i = 0 to total - 1 do
+    unwrap
+      (Inbox.publish inbox
+         (make_message ~stream_position:1
+            ~stream_id_value:(Printf.sprintf "order-%d" i)
+            ~uri:(Printf.sprintf "kafka://orders/order-%d" i)
+            ~payload:
+              [ ("type", `String "OrderCreated"); ("order", `Int i) ]
+            ()))
+  done;
+  Eio.Switch.run @@ fun sw ->
+  let stdenv = (env :> Caqti_eio.stdenv) in
+  let extra_conns = List.init 4 (fun _ -> connect ~sw ~stdenv uri) in
+  let pool_inbox =
+    Inbox.create ~table ~sequence ~partition
+      ~provider:(pool_provider extra_conns) ()
+  in
+  let recorder = make_recorder () in
+  let mu = Eio.Mutex.create () in
+  let stop_flag = ref false in
+  let subscriber : Inbox.subscriber =
+   fun _uow msg ->
+    Eio.Mutex.use_rw ~protect:true mu (fun () ->
+        recorder.seen <- recorder.seen @ [ msg ];
+        if List.length recorder.seen >= total then stop_flag := true);
+    Ok ()
+  in
+  Eio.Fiber.both
+    (fun () ->
+      Inbox.run ~poll_interval:0.01 ~concurrency:3
+        ~stop:(fun () -> !stop_flag)
+        pool_inbox
+        ~clock:(Eio.Stdenv.mono_clock env)
+        subscriber)
+    (fun () ->
+      (* Safety net: a message no worker takes would otherwise hang the test. *)
+      Eio.Time.Mono.sleep (Eio.Stdenv.mono_clock env) 3.0;
+      stop_flag := true);
+  List.iter
+    (fun c ->
+      let module C = (val c : Caqti_eio.CONNECTION) in
+      let _ = C.disconnect () in
+      ())
+    extra_conns;
+  let orders =
+    List.sort compare (List.map (fun m -> payload_int m "order") recorder.seen)
+  in
+  Alcotest.(check (list int))
+    "every message processed exactly once" (List.init total Fun.id) orders
+
 (* -------------------------------------------------------------------------- *)
 (* Runner                                                                     *)
 (* -------------------------------------------------------------------------- *)
@@ -427,6 +485,8 @@ let cases env uri =
       (test_run_with_single_worker env uri);
     Alcotest.test_case "run_with_multiple_workers" `Quick
       (test_run_with_multiple_workers env uri);
+    Alcotest.test_case "workers_share_streams_without_gaps_or_overlap" `Quick
+      (test_workers_share_streams_without_gaps_or_overlap env uri);
     Alcotest.test_case "for_update_skip_locked" `Quick
       (test_for_update_skip_locked env uri);
   ]

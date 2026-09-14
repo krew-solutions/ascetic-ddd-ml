@@ -146,8 +146,12 @@ let fetch_unprocessed_request t ~partition_active =
   in
   if partition_active then
     let module P = (val t.partition : Partition_strategy.S) in
+    (* [hashtext] is a signed [int4] and [%] keeps the sign of its dividend,
+       so a negative hash would match no worker and its messages would never
+       be processed; clearing the sign bit keeps the remainder in
+       [0, num_workers). *)
     let partition_filter =
-      Printf.sprintf "AND hashtext(%s) %% ? = ?" P.sql_expression
+      Printf.sprintf "AND (hashtext(%s) & 2147483647) %% ? = ?" P.sql_expression
     in
     let sql =
       Printf.sprintf "%s %s %s" select_cols partition_filter lock_clause
