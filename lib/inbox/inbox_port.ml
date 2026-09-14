@@ -2,7 +2,43 @@
 
     The application layer depends on this signature; the infrastructure
     layer (e.g. {!Inbox} for PostgreSQL via Caqti) provides a concrete
-    implementation by satisfying [S with type uow = ...]. *)
+    implementation by satisfying [S with type uow = ...].
+
+    Errors are values of {!Error.t}, so that a caller can tell a database
+    that went away from a statement it refused and from a message the
+    subscriber declined. Operations that take no subscriber never produce
+    [Error.Subscriber]; their error type is left polymorphic in ['e] so that
+    it composes with the caller's without conversion. *)
+
+(** What can go wrong, as a value the caller can act on. *)
+module Error = struct
+  type 'e t =
+    | Connection of string
+        (** A connection could not be established or acquired. Retry once
+            the provider can connect again. *)
+    | Request of string
+        (** The database refused or failed a statement: permanent for a
+            missing table or a violated constraint, transient for a deadlock
+            or a connection lost mid-statement. Look before retrying. *)
+    | Malformed of string
+        (** A value could not be encoded for, or decoded from, the database.
+            A defect, not a retry. *)
+    | Subscriber of 'e
+        (** The subscriber declined a message with its own error. Its writes
+            and the mark were rolled back; the message is retried by the
+            next dispatch. *)
+
+  let pp pp_subscriber ppf = function
+    | Connection reason -> Format.fprintf ppf "connection: %s" reason
+    | Request reason -> Format.fprintf ppf "request: %s" reason
+    | Malformed reason -> Format.fprintf ppf "malformed: %s" reason
+    | Subscriber e -> Format.fprintf ppf "subscriber: %a" pp_subscriber e
+
+  let to_string subscriber_to_string error =
+    Format.asprintf "%a"
+      (pp (fun ppf e -> Format.pp_print_string ppf (subscriber_to_string e)))
+      error
+end
 
 module type S = sig
   type t
@@ -15,12 +51,16 @@ module type S = sig
       implementation pins this to a concrete type (e.g.
       [Caqti_unit_of_work.t]); the application layer treats it as opaque. *)
 
-  type subscriber = uow -> Inbox_message.t -> (unit, string) result
-  (** Callback invoked by the dispatcher with the in-flight transaction
-      and the message. Returning [Error] aborts the transaction so that
-      the message is not marked processed and gets retried. *)
+  module Error = Error
+  (** The errors of every operation below. *)
 
-  val publish : t -> Inbox_message.t -> (unit, string) result
+  type 'e subscriber = uow -> Inbox_message.t -> (unit, 'e) result
+  (** Callback invoked by the dispatcher with the in-flight transaction
+      and the message. Returning [Error e] aborts the transaction so that
+      the message is not marked processed and gets retried; [e] reaches
+      the caller as [Error.Subscriber e]. *)
+
+  val publish : t -> Inbox_message.t -> (unit, 'e Error.t) result
   (** Receive and persist an incoming message.
 
       Idempotent on
@@ -29,7 +69,11 @@ module type S = sig
       NOTHING]. *)
 
   val dispatch :
-    ?worker_id:int -> ?num_workers:int -> t -> subscriber -> (bool, string) result
+    ?worker_id:int ->
+    ?num_workers:int ->
+    t ->
+    'e subscriber ->
+    (bool, 'e Error.t) result
   (** Process the next eligible message: skips messages whose causal
       dependencies are not yet processed, runs the subscriber inside a
       database transaction, marks the message processed on success.
@@ -45,8 +89,8 @@ module type S = sig
     ?stop:(unit -> bool) ->
     t ->
     clock:_ Eio.Time.Mono.t ->
-    subscriber ->
-    (unit, string) result
+    'e subscriber ->
+    (unit, 'e Error.t) result
   (** Continuously dispatch messages until [stop ()] returns [true], with
       [concurrency] loops in this process.
 
@@ -54,14 +98,14 @@ module type S = sig
       database failure or a subscriber returning [Error], stops every
       loop, a loop in the middle of a message finishing it first, and
       comes back as [Error]. Retrying is the caller's policy: a supervisor
-      that logs the error, waits and calls [run] again retries the
+      that matches on the error, waits and calls [run] again retries the
       unprocessed message. *)
 
-  val setup : t -> uow -> (unit, string) result
+  val setup : t -> uow -> (unit, 'e Error.t) result
   (** Create the inbox sequence + table + indexes if they do not
       already exist. *)
 
-  val cleanup : t -> uow -> (unit, string) result
+  val cleanup : t -> uow -> (unit, 'e Error.t) result
   (** Release any resources held by the inbox. *)
 
   (** Async-generator-style iterator that yields each eligible message
@@ -80,23 +124,28 @@ module type S = sig
       t ->
       iter
 
-    val next : iter -> ((uow * Inbox_message.t) option, string) result
+    val next : iter -> ((uow * Inbox_message.t) option, 'e Error.t) result
     (** The next message with its transaction; [Ok None] once the iterator
         has stopped or been closed; [Error] with the failure that ended
-        it. After an error the iterator is closed and its open transaction
-        rolled back: call {!start} again to retry the message. *)
+        it, never [Error.Subscriber]. After an error the iterator is
+        closed and its open transaction rolled back: call {!start} again
+        to retry the message. *)
 
     val close : iter -> unit
+    (** Detach the consumer: the open transaction, the consumer's writes
+        and the mark included, is rolled back and the message retried by
+        the next start. *)
 
     val iter :
       ?poll_interval:float ->
       ?stop:(unit -> bool) ->
       clock:_ Eio.Time.Mono.t ->
       t ->
-      (uow -> Inbox_message.t -> unit) ->
-      (unit, string) result
-    (** Run [f] on every message until [stop ()] returns [true], giving
-        [Ok ()], or a database failure ends the iteration, giving
-        [Error]. *)
+      'e subscriber ->
+      (unit, 'e Error.t) result
+    (** Run the subscriber on every message until [stop ()] returns
+        [true], giving [Ok ()]. A subscriber returning [Error e] rolls the
+        transaction back and ends the iteration with [Error.Subscriber e];
+        a database failure ends it with that error. *)
   end
 end

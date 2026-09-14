@@ -69,7 +69,7 @@ let pool_provider conns : Provider.t =
           raise exn
       in
       Eio.Stream.add stream conn;
-      result
+      Ok result
   end)
 
 let make_outbox conn =
@@ -81,17 +81,22 @@ let publish_in_tx outbox conn (msg : Outbox_message.t) =
   let module C = (val conn : Caqti_eio.CONNECTION) in
   let uow = Uow.of_connection conn in
   match C.start () with
-  | Error err -> Error (caqti_err err)
+  | Error err -> Error (Outbox.Error.Request (caqti_err err))
   | Ok () -> (
       match Outbox.publish outbox uow msg with
       | Error e ->
           let _ = C.rollback () in
           Error e
-      | Ok () -> Uow.commit uow)
+      | Ok () ->
+          Result.map_error (fun e -> Outbox.Error.Request e) (Uow.commit uow))
 
 let unwrap = function
   | Ok v -> v
-  | Error e -> Alcotest.failf "unexpected Error: %s" e
+  | Error e ->
+      Alcotest.failf "unexpected Error: %s" (Outbox.Error.to_string Fun.id e)
+
+let outbox_error : string Outbox.Error.t Alcotest.testable =
+  Alcotest.testable (Outbox.Error.pp Format.pp_print_string) ( = )
 
 let contains haystack needle =
   let h = String.length haystack and n = String.length needle in
@@ -141,7 +146,7 @@ type recorder = { mutable seen : Outbox_message.t list }
 
 let make_recorder () = { seen = [] }
 
-let recording_subscriber recorder : Outbox.subscriber =
+let recording_subscriber recorder : _ Outbox.subscriber =
  fun msg ->
   recorder.seen <- recorder.seen @ [ msg ];
   Ok ()
@@ -414,7 +419,10 @@ let test_idempotency_via_message_id env uri () =
   with
   | Ok () ->
       Alcotest.fail "expected unique violation on duplicate message_id"
-  | Error _ -> ()
+  | Error (Outbox.Error.Request _) -> ()
+  | Error e ->
+      Alcotest.failf "expected a request error, got %s"
+        (Outbox.Error.to_string Fun.id e)
 
 let test_visibility_rule env uri () =
   with_outbox_env env uri @@ fun _env _conn outbox ->
@@ -425,7 +433,7 @@ let test_visibility_rule env uri () =
   unwrap
     ((match Other.start () with
       | Ok () -> Ok ()
-      | Error e -> Error (caqti_err e)));
+      | Error e -> Error (Outbox.Error.Request (caqti_err e))));
   let open Caqti_request.Infix in
   let open Caqti_type in
   let req =
@@ -440,7 +448,7 @@ let test_visibility_rule env uri () =
   unwrap
     (match Other.exec req () with
     | Ok () -> Ok ()
-    | Error e -> Error (caqti_err e));
+    | Error e -> Error (Outbox.Error.Request (caqti_err e)));
   (* Before the other transaction commits, dispatcher must see nothing. *)
   let recorder = make_recorder () in
   let dispatched_before =
@@ -452,7 +460,7 @@ let test_visibility_rule env uri () =
   unwrap
     (match Other.commit () with
     | Ok () -> Ok ()
-    | Error e -> Error (caqti_err e));
+    | Error e -> Error (Outbox.Error.Request (caqti_err e)));
   let dispatched_after =
     unwrap (Outbox.dispatch outbox (recording_subscriber recorder))
   in
@@ -501,14 +509,18 @@ let test_run_with_multiple_workers env uri () =
             ~payload:[ ("type", `String "OrderCreated"); ("order", `Int i) ]))
   done;
   (* For concurrency > 1 we need a real pool: a single connection cannot
-     be used from multiple fibers simultaneously (Caqti raises). Open
-     extra connections and wrap them in [pool_provider]. *)
+     be used from multiple fibers simultaneously (Caqti raises). This test
+     goes through a Caqti pool and [Provider.of_pool], the wiring the
+     README recommends; the other tests use the in-test round-robin pool. *)
   Eio.Switch.run @@ fun sw ->
   let stdenv = (env :> Caqti_eio.stdenv) in
-  let extra_conns = List.init 4 (fun _ -> connect ~sw ~stdenv uri) in
+  let pool =
+    match Caqti_eio_unix.connect_pool ~sw ~stdenv uri with
+    | Ok pool -> pool
+    | Error err -> Alcotest.failf "connect_pool failed: %a" Caqti_error.pp err
+  in
   let pool_outbox =
-    Outbox.create ~outbox_table ~offsets_table
-      ~provider:(pool_provider extra_conns) ()
+    Outbox.create ~outbox_table ~offsets_table ~provider:(Provider.of_pool pool) ()
   in
   let recorder = make_recorder () in
   let mu = Eio.Mutex.create () in
@@ -531,12 +543,6 @@ let test_run_with_multiple_workers env uri () =
       (* Safety net. *)
       Eio.Time.Mono.sleep (Eio.Stdenv.mono_clock env) 3.0;
       stop_flag := true);
-  List.iter
-    (fun c ->
-      let module C = (val c : Caqti_eio.CONNECTION) in
-      let _ = C.disconnect () in
-      ())
-    extra_conns;
   Alcotest.(check int) "all 10 processed" 10 (List.length recorder.seen)
 
 let test_iterator env uri () =
@@ -557,13 +563,13 @@ let test_iterator env uri () =
     match Outbox.Iter.next it with
     | Ok (Some m) -> m
     | Ok None -> Alcotest.fail "expected first message"
-    | Error e -> Alcotest.fail e
+    | Error e -> Alcotest.fail (Outbox.Error.to_string Fun.id e)
   in
   let m2 =
     match Outbox.Iter.next it with
     | Ok (Some m) -> m
     | Ok None -> Alcotest.fail "expected second message"
-    | Error e -> Alcotest.fail e
+    | Error e -> Alcotest.fail (Outbox.Error.to_string Fun.id e)
   in
   Outbox.Iter.close it;
   Alcotest.(check int) "order 0" 0 (payload_int m1 "order");
@@ -579,10 +585,13 @@ let test_iterator_surfaces_a_database_error env uri () =
   in
   let it = Outbox.Iter.start ~clock:(Eio.Stdenv.mono_clock env) broken in
   (match Outbox.Iter.next it with
-  | Error e ->
+  | Error (Outbox.Error.Request reason) ->
       Alcotest.(check bool)
-        "the error names the missing table" true
-        (contains e "outbox_missing_test")
+        "the request error names the missing table" true
+        (contains reason "outbox_missing_test")
+  | Error e ->
+      Alcotest.failf "expected a request error, got %s"
+        (Outbox.Error.to_string Fun.id e)
   | Ok _ -> Alcotest.fail "expected the fetch error");
   Alcotest.(check bool)
     "closed after the error" true
@@ -723,8 +732,10 @@ let test_run_returns_the_first_error env uri () =
     extra_conns;
   match outcome with
   | `Returned result ->
-      Alcotest.(check (result unit string))
-        "the subscriber's error comes back" (Error "subscriber failure") result
+      Alcotest.(check (result unit outbox_error))
+        "the subscriber's error comes back"
+        (Error (Outbox.Error.Subscriber "subscriber failure"))
+        result
   | `Timed_out ->
       Alcotest.fail "run did not stop the other loops after the error"
 

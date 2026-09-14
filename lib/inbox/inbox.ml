@@ -12,10 +12,12 @@
 
 module Uow = Ascetic_unit_of_work.Caqti_unit_of_work
 module Provider = Ascetic_unit_of_work.Caqti_connection_provider
+module Error = Inbox_port.Error
+module Kind = Ascetic_unit_of_work.Caqti_error_kind
 
 type uow = Uow.t
 
-type subscriber = uow -> Inbox_message.t -> (unit, string) result
+type 'e subscriber = uow -> Inbox_message.t -> (unit, 'e) result
 
 type t = {
   provider : Provider.t;
@@ -32,17 +34,39 @@ let create ?(table = "inbox") ?(sequence = "inbox_received_position_seq")
 (* Helpers                                                                    *)
 (* -------------------------------------------------------------------------- *)
 
-let caqti_err err = Format.asprintf "%a" Caqti_error.pp err
+let of_caqti err =
+  let reason = Caqti_error.show err in
+  match Kind.of_error err with
+  | Kind.Connection -> Error.Connection reason
+  | Kind.Request -> Error.Request reason
+  | Kind.Malformed -> Error.Malformed reason
+
+(* The error of an operation that has no subscriber, as the error of any
+   operation: its [Subscriber] case is uninhabited. *)
+type nothing = |
+
+let lift : nothing Error.t -> 'e Error.t = function
+  | Error.Connection reason -> Error.Connection reason
+  | Error.Request reason -> Error.Request reason
+  | Error.Malformed reason -> Error.Malformed reason
+  | Error.Subscriber _ -> .
+
+(* Acquiring a connection and using it are two layers of the provider's
+   result; an acquisition failure becomes [Connection] here. *)
+let with_connection t f =
+  match Provider.with_connection t.provider f with
+  | Error acquire -> Error (of_caqti acquire)
+  | Ok outcome -> outcome
 
 let exec (module C : Caqti_eio.CONNECTION) req param =
   match C.exec req param with
   | Ok () -> Ok ()
-  | Error err -> Error (caqti_err err)
+  | Error err -> Error (of_caqti err)
 
 let find_opt (module C : Caqti_eio.CONNECTION) req param =
   match C.find_opt req param with
   | Ok v -> Ok v
-  | Error err -> Error (caqti_err err)
+  | Error err -> Error (of_caqti err)
 
 let json_to_string j = Yojson.Safe.to_string j
 
@@ -68,12 +92,12 @@ let insert_request t =
   (t7 string string string int string octets (option string) ->. unit) sql
 
 let publish t (msg : Inbox_message.t) =
-  Provider.with_connection t.provider (fun conn ->
+  with_connection t (fun conn ->
       let module C = (val conn : Caqti_eio.CONNECTION) in
       let req = insert_request t in
       let metadata_text = Option.map json_to_string msg.metadata in
       match C.start () with
-      | Error e -> Error (caqti_err e)
+      | Error e -> Error (of_caqti e)
       | Ok () -> (
           let result =
             exec conn req
@@ -94,7 +118,7 @@ let publish t (msg : Inbox_message.t) =
               | Ok () -> Ok ()
               | Error e ->
                   let _ = C.rollback () in
-                  Error (caqti_err e))))
+                  Error (of_caqti e))))
 
 (* -------------------------------------------------------------------------- *)
 (* fetch + dependency check + mark_processed                                  *)
@@ -246,12 +270,12 @@ let mark_processed t conn (msg : Inbox_message.t) =
 let begin_tx (module C : Caqti_eio.CONNECTION) =
   match C.start () with
   | Ok () -> Ok ()
-  | Error err -> Error (caqti_err err)
+  | Error err -> Error (of_caqti err)
 
 let commit_tx (module C : Caqti_eio.CONNECTION) =
   match C.commit () with
   | Ok () -> Ok ()
-  | Error err -> Error (caqti_err err)
+  | Error err -> Error (of_caqti err)
 
 let rollback_tx (module C : Caqti_eio.CONNECTION) =
   let _ = C.rollback () in
@@ -282,9 +306,9 @@ let in_transaction conn f =
 (* dispatch                                                                   *)
 (* -------------------------------------------------------------------------- *)
 
-let dispatch ?(worker_id = 0) ?(num_workers = 1) (t : t) (subscriber : subscriber)
+let dispatch ?(worker_id = 0) ?(num_workers = 1) (t : t) (subscriber : 'e subscriber)
     =
-  Provider.with_connection t.provider (fun conn ->
+  with_connection t (fun conn ->
       in_transaction conn (fun conn ->
           let uow = Uow.of_connection conn in
           match
@@ -294,7 +318,7 @@ let dispatch ?(worker_id = 0) ?(num_workers = 1) (t : t) (subscriber : subscribe
           | Ok None -> Ok false
           | Ok (Some msg) -> (
               match subscriber uow msg with
-              | Error e -> Error e
+              | Error e -> Error (Error.Subscriber e)
               | Ok () ->
                   Result.map (fun () -> true) (mark_processed t conn msg))))
 
@@ -308,7 +332,7 @@ let dispatch ?(worker_id = 0) ?(num_workers = 1) (t : t) (subscriber : subscribe
    once. *)
 let run ?(process_id = 0) ?(num_processes = 1) ?(concurrency = 1)
     ?(poll_interval = 1.0) ?(stop = fun () -> false) (t : t) ~clock
-    (subscriber : subscriber) =
+    (subscriber : 'e subscriber) =
   let effective_total = num_processes * concurrency in
   let failed, resolve_failed = Eio.Promise.create () in
   let stopped () = stop () || Eio.Promise.is_resolved failed in
@@ -408,7 +432,7 @@ module Iter = struct
   type status =
     | Yielded of uow * Inbox_message.t
         * (unit, status) Effect.Deep.continuation
-    | Finished of (unit, string) result
+    | Finished of (unit, nothing Error.t) result
 
   type state =
     | Initial of (unit -> status)
@@ -428,7 +452,7 @@ module Iter = struct
       if stop () then Ok ()
       else
         let* had_message =
-          Provider.with_connection t.provider (fun conn ->
+          with_connection t (fun conn ->
               in_transaction conn (fun conn ->
                   let uow = Uow.of_connection conn in
                   let* fetched =
@@ -474,7 +498,7 @@ module Iter = struct
         Ok (Some (uow, m))
     | Finished outcome ->
         iter.state <- Closed;
-        Result.map (fun () -> None) outcome
+        Result.map_error lift (Result.map (fun () -> None) outcome)
 
   let next iter =
     match iter.state with
@@ -490,14 +514,17 @@ module Iter = struct
     | _ -> ());
     iter.state <- Closed
 
-  let iter ?poll_interval ?stop ~clock t f =
+  (* [close] in [finally] rolls the open transaction back when the
+     subscriber declines a message, as it does on a raise. *)
+  let iter ?poll_interval ?stop ~clock t (subscriber : 'e subscriber) =
     let it = start ?poll_interval ?stop ~clock t in
     let rec loop () =
       match next it with
       | Ok None -> Ok ()
-      | Ok (Some (uow, m)) ->
-          f uow m;
-          loop ()
+      | Ok (Some (uow, m)) -> (
+          match subscriber uow m with
+          | Ok () -> loop ()
+          | Error e -> Error (Error.Subscriber e))
       | Error e -> Error e
     in
     Fun.protect ~finally:(fun () -> close it) loop

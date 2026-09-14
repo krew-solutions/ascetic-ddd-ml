@@ -47,7 +47,7 @@ let () =
   (* 3. Make sure the schema exists (idempotent). *)
   let uow = Ascetic_unit_of_work.Caqti_unit_of_work.of_connection conn in
   match Outbox.setup outbox uow with
-  | Error e -> failwith e
+  | Error e -> failwith (Outbox.Error.to_string Fun.id e)
   | Ok () -> ()
 ```
 
@@ -75,36 +75,22 @@ shared use of a single connection from multiple fibers.
 
 ### Caqti pool (production, `concurrency > 1`)
 
-`Caqti_eio.Pool.use` constrains its callback's error type to
-`[> Caqti_error.t]`, but we want to surface our own `(_, string) result`.
-The cleanest way is to smuggle the error through an exception:
+A provider separates acquiring a connection from using it: it fails only
+when no connection could be obtained, and otherwise returns whatever the
+callback returned. That is the shape of `Caqti_eio.Pool.use` as well, so
+a pool needs no adaptation:
 
 ```ocaml
-let provider_of_pool pool : Connection_provider.t =
-  (module struct
-    exception Outbox_error of string
-
-    let with_connection f =
-      try
-        Caqti_eio.Pool.use
-          (fun conn ->
-            match f conn with
-            | Ok v -> Ok v
-            | Error msg -> raise (Outbox_error msg))
-          pool
-        |> Result.map_error (fun e ->
-               Format.asprintf "%a" Caqti_error.pp e)
-      with Outbox_error msg -> Error msg
-  end)
-
-(* Wire it: *)
 let pool =
   match Caqti_eio_unix.connect_pool ~sw ~stdenv uri with
   | Ok p -> p
   | Error e -> failwith (Format.asprintf "%a" Caqti_error.pp e)
 in
-let outbox = Outbox.create ~provider:(provider_of_pool pool) ()
+let outbox = Outbox.create ~provider:(Connection_provider.of_pool pool) ()
 ```
+
+A connection that cannot be acquired reaches the caller as
+`Outbox.Error.Connection`.
 
 Pool size defaults to a small number; raise it via
 `Caqti_pool_config` when you need `concurrency > 1`. Plan for at least
@@ -137,6 +123,7 @@ let create_order outbox conn order =
              ~payload:(Yojson.Safe.to_string (`Assoc [ ("order_id", `String order.id) ]))
              ~metadata:(`Assoc [ ("message_id", `String (Uuidm.to_string (Uuidm.v `V4))) ])
              ())
+        |> Result.map_error (Outbox.Error.to_string Fun.id)
       in
       match result with
       | Error e -> Uow.rollback uow; Error e
@@ -157,14 +144,15 @@ Simplest for "process each message and move on":
 ```ocaml
 let subscriber (msg : Outbox_message.t) =
   Logs.info (fun m -> m "got %s" msg.uri);
-  (* do work; raising rolls the open batch back, and it is redelivered *)
+  Ok ()   (* Error e rolls the open batch back and ends the iteration *)
 in
 match
   Outbox.Iter.iter ~clock:(Eio.Stdenv.mono_clock env)
     ~consumer_group:"my-service" outbox subscriber
 with
 | Ok () -> ()                                  (* stopped *)
-| Error e -> Logs.err (fun m -> m "outbox iterator: %s" e)
+| Error e ->
+    Logs.err (fun m -> m "outbox iterator: %s" (Outbox.Error.to_string Fun.id e))
 ```
 
 Backed by OCaml 5 effect handlers; each batch is fetched in one
@@ -181,7 +169,7 @@ Useful for cron-style dispatchers or test code:
 match Outbox.dispatch outbox subscriber with
 | Ok true  -> (* processed at least one message *)
 | Ok false -> (* nothing pending *)
-| Error e  -> Logs.err (fun m -> m "%s" e)
+| Error e  -> Logs.err (fun m -> m "%s" (Outbox.Error.to_string Fun.id e))
 ```
 
 ### `Outbox.run` (callback loop with concurrency)
@@ -198,21 +186,35 @@ let rec supervise () =
       ~poll_interval:0.5 ~stop:(fun () -> !stop) outbox subscriber
   with
   | Ok () -> ()                        (* stopped *)
-  | Error e ->
-      Logs.err (fun m -> m "outbox dispatcher: %s" e);
-      if not !stop then (
-        Eio.Time.Mono.sleep clock 1.0;
-        supervise ())
+  | Error (Outbox.Error.Connection reason) ->
+      (* the database went away; a pool reconnects on the next use *)
+      Logs.warn (fun m -> m "outbox dispatcher: %s" reason);
+      retry ()
+  | Error (Outbox.Error.Subscriber reason) ->
+      (* the subscriber refused a message; the batch is redelivered *)
+      Logs.err (fun m -> m "outbox dispatcher: %s" reason);
+      retry ()
+  | Error ((Outbox.Error.Request _ | Outbox.Error.Malformed _) as e) ->
+      (* not transient by nature: alert, and decide whether to go on *)
+      Logs.err (fun m -> m "outbox dispatcher: %s" (Outbox.Error.to_string Fun.id e));
+      retry ()
+and retry () =
+  if not !stop then (
+    Eio.Time.Mono.sleep clock 1.0;
+    supervise ())
 in
 supervise ()
 ```
 
-`run` returns `Ok ()` once stopped. The first error of any loop — a
-database failure, a subscriber returning `Error` — stops every loop (a
-loop in the middle of a batch finishes it first) and comes back as
-`Error`. The dispatcher does not retry on its own and does not hide
-the error: retrying is the caller's policy, as in the supervisor above,
-and the rolled-back batch is redelivered by the next `run`.
+`run` returns `Ok ()` once stopped. The first error of any loop stops
+every loop (a loop in the middle of a batch finishes it first) and comes
+back as an `Outbox.Error.t`: `Connection` when the database could not be
+reached, `Request` when it refused a statement, `Malformed` when a value
+could not be encoded or decoded, `Subscriber e` when the subscriber
+declined a message with its own error `e`. The dispatcher does not retry
+on its own and does not hide the error: retrying is the caller's policy,
+as in the supervisor above, and the rolled-back batch is redelivered by
+the next `run`.
 
 When `concurrency > 1`, work is partitioned by
 `(hashtext(uri) & 2147483647) % N`, so messages for the same URI always
@@ -268,24 +270,31 @@ let () =
            failwith (Format.asprintf "%a" Caqti_error.pp e))
   in
   let outbox =
-    Outbox.create ~provider:(provider_of_pool pool) ()
+    Outbox.create ~provider:(Connection_provider.of_pool pool) ()
   in
   let client = Cohttp_eio.Client.make ~https:None (Eio.Stdenv.net env) in
 
-  Outbox.Iter.iter
-    ~clock:(Eio.Stdenv.mono_clock env)
-    ~consumer_group:"webhook-publisher"
-    ~uri:"webhook://"     (* only handle webhook:// URIs *)
-    outbox
-    (fun msg ->
-      match post_webhook ~sw ~client msg with
-      | Ok () -> ()
-      | Error e ->
-          Logs.warn (fun m -> m "delivery failed: %s" e);
-          (* exception propagation here would close the iterator;
-             swallowing means the message is acked despite failure.
-             For at-least-once delivery, raise instead. *)
-          ())
+  match
+    Outbox.Iter.iter
+      ~clock:(Eio.Stdenv.mono_clock env)
+      ~consumer_group:"webhook-publisher"
+      ~uri:"webhook://"     (* only handle webhook:// URIs *)
+      outbox
+      (fun msg ->
+        match post_webhook ~sw ~client msg with
+        | Ok () -> Ok ()
+        | Error e when is_transient e ->
+            (* rolls the open batch back and ends the iteration; the
+               message is redelivered by the next run *)
+            Error e
+        | Error e ->
+            (* a poison message: log and acknowledge, or it blocks the group *)
+            Logs.warn (fun m -> m "drop %s: %s" msg.uri e);
+            Ok ())
+  with
+  | Ok () -> ()
+  | Error e ->
+      Logs.err (fun m -> m "webhook publisher: %s" (Outbox.Error.to_string Fun.id e))
 ```
 
 Same shape works for any broker:
@@ -316,7 +325,8 @@ match
     ~stop:(fun () -> !stop_flag) outbox subscriber
 with
 | Ok () -> ()
-| Error e -> Logs.err (fun m -> m "outbox dispatcher: %s" e)
+| Error e ->
+    Logs.err (fun m -> m "outbox dispatcher: %s" (Outbox.Error.to_string Fun.id e))
 ```
 
 `stop` is checked between batches; the in-flight batch always finishes.

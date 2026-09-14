@@ -53,7 +53,7 @@ let pool_provider conns : Provider.t =
           raise exn
       in
       Eio.Stream.add stream conn;
-      result
+      Ok result
   end)
 
 let make_inbox ?partition conn =
@@ -62,7 +62,11 @@ let make_inbox ?partition conn =
 
 let unwrap = function
   | Ok v -> v
-  | Error e -> Alcotest.failf "unexpected Error: %s" e
+  | Error e ->
+      Alcotest.failf "unexpected Error: %s" (Inbox.Error.to_string Fun.id e)
+
+let inbox_error : string Inbox.Error.t Alcotest.testable =
+  Alcotest.testable (Inbox.Error.pp Format.pp_print_string) ( = )
 
 let contains haystack needle =
   let h = String.length haystack and n = String.length needle in
@@ -112,7 +116,7 @@ type recorder = { mutable seen : Inbox_message.t list }
 
 let make_recorder () = { seen = [] }
 
-let recording_subscriber recorder : Inbox.subscriber =
+let recording_subscriber recorder : _ Inbox.subscriber =
  fun _uow msg ->
   recorder.seen <- recorder.seen @ [ msg ];
   Ok ()
@@ -255,7 +259,7 @@ let test_routing_by_uri env uri () =
           ~payload:[ ("type", `String "OrderShipped") ]
           ()));
   let routed = ref [] in
-  let subscriber : Inbox.subscriber =
+  let subscriber : _ Inbox.subscriber =
    fun _uow m ->
     let kind =
       if m.uri = "kafka://orders" then "orders" else "shipments"
@@ -287,13 +291,13 @@ let test_iterator env uri () =
     match Inbox.Iter.next it with
     | Ok (Some pair) -> pair
     | Ok None -> Alcotest.fail "expected first message"
-    | Error e -> Alcotest.fail e
+    | Error e -> Alcotest.fail (Inbox.Error.to_string Fun.id e)
   in
   let _, m2 =
     match Inbox.Iter.next it with
     | Ok (Some pair) -> pair
     | Ok None -> Alcotest.fail "expected second message"
-    | Error e -> Alcotest.fail e
+    | Error e -> Alcotest.fail (Inbox.Error.to_string Fun.id e)
   in
   Inbox.Iter.close it;
   Alcotest.(check int) "order 0" 0 (payload_int m1 "order");
@@ -309,10 +313,13 @@ let test_iterator_surfaces_a_database_error env uri () =
   in
   let it = Inbox.Iter.start ~clock:(Eio.Stdenv.mono_clock env) broken in
   (match Inbox.Iter.next it with
-  | Error e ->
+  | Error (Inbox.Error.Request reason) ->
       Alcotest.(check bool)
-        "the error names the missing table" true
-        (contains e "inbox_missing_test")
+        "the request error names the missing table" true
+        (contains reason "inbox_missing_test")
+  | Error e ->
+      Alcotest.failf "expected a request error, got %s"
+        (Inbox.Error.to_string Fun.id e)
   | Ok _ -> Alcotest.fail "expected the fetch error");
   Alcotest.(check bool)
     "closed after the error" true
@@ -360,17 +367,23 @@ let test_run_with_multiple_workers env uri () =
               [ ("type", `String "OrderCreated"); ("order", `Int i) ]
             ()))
   done;
+  (* This test goes through a Caqti pool and [Provider.of_pool], the wiring
+     the README recommends; the other tests use the in-test round-robin
+     pool. *)
   Eio.Switch.run @@ fun sw ->
   let stdenv = (env :> Caqti_eio.stdenv) in
-  let extra_conns = List.init 4 (fun _ -> connect ~sw ~stdenv uri) in
+  let pool =
+    match Caqti_eio_unix.connect_pool ~sw ~stdenv uri with
+    | Ok pool -> pool
+    | Error err -> Alcotest.failf "connect_pool failed: %a" Caqti_error.pp err
+  in
   let pool_inbox =
-    Inbox.create ~table ~sequence
-      ~provider:(pool_provider extra_conns) ()
+    Inbox.create ~table ~sequence ~provider:(Provider.of_pool pool) ()
   in
   let recorder = make_recorder () in
   let mu = Eio.Mutex.create () in
   let stop_flag = ref false in
-  let subscriber : Inbox.subscriber =
+  let subscriber : _ Inbox.subscriber =
    fun _uow msg ->
     Eio.Mutex.use_rw ~protect:true mu (fun () ->
         recorder.seen <- recorder.seen @ [ msg ];
@@ -388,12 +401,6 @@ let test_run_with_multiple_workers env uri () =
     (fun () ->
       Eio.Time.Mono.sleep (Eio.Stdenv.mono_clock env) 3.0;
       stop_flag := true);
-  List.iter
-    (fun c ->
-      let module C = (val c : Caqti_eio.CONNECTION) in
-      let _ = C.disconnect () in
-      ())
-    extra_conns;
   Alcotest.(check int) "all 10 processed" 10 (List.length recorder.seen)
 
 let test_for_update_skip_locked env uri () =
@@ -412,7 +419,7 @@ let test_for_update_skip_locked env uri () =
   let recorder = make_recorder () in
   let mu = Eio.Mutex.create () in
   let stop_flag = ref false in
-  let subscriber : Inbox.subscriber =
+  let subscriber : _ Inbox.subscriber =
    fun _uow msg ->
     Eio.Mutex.use_rw ~protect:true mu (fun () ->
         recorder.seen <- recorder.seen @ [ msg ]);
@@ -465,7 +472,7 @@ let test_workers_share_streams_without_gaps_or_overlap env uri () =
   let recorder = make_recorder () in
   let mu = Eio.Mutex.create () in
   let stop_flag = ref false in
-  let subscriber : Inbox.subscriber =
+  let subscriber : _ Inbox.subscriber =
    fun _uow msg ->
     Eio.Mutex.use_rw ~protect:true mu (fun () ->
         recorder.seen <- recorder.seen @ [ msg ];
@@ -532,8 +539,10 @@ let test_run_returns_the_first_error env uri () =
     extra_conns;
   match outcome with
   | `Returned result ->
-      Alcotest.(check (result unit string))
-        "the subscriber's error comes back" (Error "subscriber failure") result
+      Alcotest.(check (result unit inbox_error))
+        "the subscriber's error comes back"
+        (Error (Inbox.Error.Subscriber "subscriber failure"))
+        result
   | `Timed_out ->
       Alcotest.fail "run did not stop the other loops after the error"
 

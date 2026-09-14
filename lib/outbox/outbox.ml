@@ -11,10 +11,12 @@
     See [init.sql] for schema details and design rationale. *)
 
 module Uow = Ascetic_unit_of_work.Caqti_unit_of_work
+module Error = Outbox_port.Error
+module Kind = Ascetic_unit_of_work.Caqti_error_kind
 
 type uow = Uow.t
 
-type subscriber = Outbox_message.t -> (unit, string) result
+type 'e subscriber = Outbox_message.t -> (unit, 'e) result
 
 type t = {
   provider : Ascetic_unit_of_work.Caqti_connection_provider.t;
@@ -31,22 +33,46 @@ let create ?(outbox_table = "outbox") ?(offsets_table = "outbox_offsets")
 (* Helpers                                                                    *)
 (* -------------------------------------------------------------------------- *)
 
-let caqti_err err = Format.asprintf "%a" Caqti_error.pp err
+let of_caqti err =
+  let reason = Caqti_error.show err in
+  match Kind.of_error err with
+  | Kind.Connection -> Error.Connection reason
+  | Kind.Request -> Error.Request reason
+  | Kind.Malformed -> Error.Malformed reason
+
+(* The error of an operation that has no subscriber, as the error of any
+   operation: its [Subscriber] case is uninhabited. *)
+type nothing = |
+
+let lift : nothing Error.t -> 'e Error.t = function
+  | Error.Connection reason -> Error.Connection reason
+  | Error.Request reason -> Error.Request reason
+  | Error.Malformed reason -> Error.Malformed reason
+  | Error.Subscriber _ -> .
+
+(* Acquiring a connection and using it are two layers of the provider's
+   result; an acquisition failure becomes [Connection] here. *)
+let with_connection t f =
+  match
+    Ascetic_unit_of_work.Caqti_connection_provider.with_connection t.provider f
+  with
+  | Error acquire -> Error (of_caqti acquire)
+  | Ok outcome -> outcome
 
 let exec (module C : Caqti_eio.CONNECTION) req param =
   match C.exec req param with
   | Ok () -> Ok ()
-  | Error err -> Error (caqti_err err)
+  | Error err -> Error (of_caqti err)
 
 let find_opt (module C : Caqti_eio.CONNECTION) req param =
   match C.find_opt req param with
   | Ok v -> Ok v
-  | Error err -> Error (caqti_err err)
+  | Error err -> Error (of_caqti err)
 
 let collect_list (module C : Caqti_eio.CONNECTION) req param =
   match C.collect_list req param with
   | Ok v -> Ok v
-  | Error err -> Error (caqti_err err)
+  | Error err -> Error (of_caqti err)
 
 let json_to_string j = Yojson.Safe.to_string j
 
@@ -234,12 +260,12 @@ let fetch_messages t (uow : Uow.t) ~consumer_group ~uri ~worker_id ~num_workers
 let begin_tx (module C : Caqti_eio.CONNECTION) =
   match C.start () with
   | Ok () -> Ok ()
-  | Error err -> Error (caqti_err err)
+  | Error err -> Error (of_caqti err)
 
 let commit_tx (module C : Caqti_eio.CONNECTION) =
   match C.commit () with
   | Ok () -> Ok ()
-  | Error err -> Error (caqti_err err)
+  | Error err -> Error (of_caqti err)
 
 let rollback_tx (module C : Caqti_eio.CONNECTION) =
   let _ = C.rollback () in
@@ -271,21 +297,21 @@ let in_transaction conn f =
 (* -------------------------------------------------------------------------- *)
 
 let dispatch ?(consumer_group = "") ?(uri = "") ?(worker_id = 0)
-    ?(num_workers = 1) (t : t) (subscriber : subscriber) =
+    ?(num_workers = 1) (t : t) (subscriber : 'e subscriber) =
   let effective_group =
     if num_workers > 1 then Printf.sprintf "%s:%d" consumer_group worker_id
     else consumer_group
   in
   (* Ensure the consumer group row exists before we try to FOR UPDATE it. *)
   let ensure_result =
-    Ascetic_unit_of_work.Caqti_connection_provider.with_connection t.provider (fun conn ->
+    with_connection t (fun conn ->
         let uow = Uow.of_connection conn in
         ensure_consumer_group t uow ~consumer_group:effective_group ~uri)
   in
   match ensure_result with
   | Error e -> Error e
   | Ok () ->
-      Ascetic_unit_of_work.Caqti_connection_provider.with_connection t.provider (fun conn ->
+      with_connection t (fun conn ->
           in_transaction conn (fun conn ->
               let uow = Uow.of_connection conn in
               match
@@ -299,7 +325,7 @@ let dispatch ?(consumer_group = "") ?(uri = "") ?(worker_id = 0)
                     | [] -> Ok ()
                     | m :: rest -> (
                         match subscriber m with
-                        | Error e -> Error e
+                        | Error e -> Error (Error.Subscriber e)
                         | Ok () -> process rest)
                   in
                   match process messages with
@@ -330,7 +356,7 @@ let dispatch ?(consumer_group = "") ?(uri = "") ?(worker_id = 0)
    batch finishes it first; a loop asleep between batches wakes at once. *)
 let run ?(consumer_group = "") ?(uri = "") ?(process_id = 0)
     ?(num_processes = 1) ?(concurrency = 1) ?(poll_interval = 1.0)
-    ?(stop = fun () -> false) (t : t) ~clock (subscriber : subscriber) =
+    ?(stop = fun () -> false) (t : t) ~clock (subscriber : 'e subscriber) =
   let effective_total = num_processes * concurrency in
   let failed, resolve_failed = Eio.Promise.create () in
   let stopped () = stop () || Eio.Promise.is_resolved failed in
@@ -436,7 +462,7 @@ module Iter = struct
 
   type status =
     | Yielded of Outbox_message.t * (unit, status) Effect.Deep.continuation
-    | Finished of (unit, string) result
+    | Finished of (unit, nothing Error.t) result
 
   type state =
     | Initial of (unit -> status)
@@ -453,8 +479,7 @@ module Iter = struct
   let body t ~consumer_group ~uri ~clock ~poll_interval ~stop () =
     let ( let* ) = Result.bind in
     let* () =
-      Ascetic_unit_of_work.Caqti_connection_provider.with_connection t.provider
-        (fun conn ->
+      with_connection t (fun conn ->
           let uow = Uow.of_connection conn in
           ensure_consumer_group t uow ~consumer_group ~uri)
     in
@@ -462,8 +487,7 @@ module Iter = struct
       if stop () then Ok ()
       else
         let* had_messages =
-          Ascetic_unit_of_work.Caqti_connection_provider.with_connection
-            t.provider (fun conn ->
+          with_connection t (fun conn ->
               in_transaction conn (fun conn ->
                   let uow = Uow.of_connection conn in
                   let* messages =
@@ -517,7 +541,7 @@ module Iter = struct
         Ok (Some m)
     | Finished outcome ->
         iter.state <- Closed;
-        Result.map (fun () -> None) outcome
+        Result.map_error lift (Result.map (fun () -> None) outcome)
 
   let next iter =
     match iter.state with
@@ -533,14 +557,18 @@ module Iter = struct
     | _ -> ());
     iter.state <- Closed
 
-  let iter ?consumer_group ?uri ?poll_interval ?stop ~clock t f =
+  (* [close] in [finally] rolls the open batch back when the subscriber
+     declines a message, as it does on a raise. *)
+  let iter ?consumer_group ?uri ?poll_interval ?stop ~clock t
+      (subscriber : 'e subscriber) =
     let it = start ?consumer_group ?uri ?poll_interval ?stop ~clock t in
     let rec loop () =
       match next it with
       | Ok None -> Ok ()
-      | Ok (Some m) ->
-          f m;
-          loop ()
+      | Ok (Some m) -> (
+          match subscriber m with
+          | Ok () -> loop ()
+          | Error e -> Error (Error.Subscriber e))
       | Error e -> Error e
     in
     Fun.protect ~finally:(fun () -> close it) loop

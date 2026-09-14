@@ -55,7 +55,7 @@ let () =
 
   let uow = Ascetic_unit_of_work.Caqti_unit_of_work.of_connection conn in
   match Inbox.setup inbox uow with
-  | Error e -> failwith e
+  | Error e -> failwith (Inbox.Error.to_string Fun.id e)
   | Ok () -> ()
 ```
 
@@ -87,7 +87,7 @@ let msg =
 in
 match Inbox.publish inbox msg with
 | Ok () -> ()
-| Error e -> Logs.err (fun m -> m "publish failed: %s" e)
+| Error e -> Logs.err (fun m -> m "publish failed: %s" (Inbox.Error.to_string Fun.id e))
 ```
 
 `stream_id` is `Yojson.Safe.t` so it can be a primitive
@@ -152,10 +152,13 @@ match
       match msg.uri with
       | "webhook://orders.example.com" -> handle_order uow msg
       | "webhook://shipments.example.com" -> handle_shipment uow msg
-      | _ -> Logs.warn (fun m -> m "unknown uri: %s" msg.uri))
+      | _ ->
+          Logs.warn (fun m -> m "unknown uri: %s" msg.uri);
+          Ok ())
 with
 | Ok () -> ()                                  (* stopped *)
-| Error e -> Logs.err (fun m -> m "inbox iterator: %s" e)
+| Error e ->
+    Logs.err (fun m -> m "inbox iterator: %s" (Inbox.Error.to_string Fun.id e))
 ```
 
 A database failure at any step ends the iteration with `Error` rather
@@ -167,7 +170,7 @@ than looking like an empty inbox; start again to retry the message.
 match Inbox.dispatch inbox subscriber with
 | Ok true  -> (* one message processed *)
 | Ok false -> (* nothing eligible right now *)
-| Error e  -> Logs.err (fun m -> m "%s" e)
+| Error e  -> Logs.err (fun m -> m "%s" (Inbox.Error.to_string Fun.id e))
 ```
 
 ### `Inbox.run` (long-running daemon with concurrency)
@@ -181,21 +184,35 @@ let rec supervise () =
       ~poll_interval:0.5 ~stop:(fun () -> !stop_flag) inbox subscriber
   with
   | Ok () -> ()                        (* stopped *)
-  | Error e ->
-      Logs.err (fun m -> m "inbox dispatcher: %s" e);
-      if not !stop_flag then (
-        Eio.Time.Mono.sleep clock 1.0;
-        supervise ())
+  | Error (Inbox.Error.Connection reason) ->
+      (* the database went away; a pool reconnects on the next use *)
+      Logs.warn (fun m -> m "inbox dispatcher: %s" reason);
+      retry ()
+  | Error (Inbox.Error.Subscriber reason) ->
+      (* the subscriber refused a message; it is retried *)
+      Logs.err (fun m -> m "inbox dispatcher: %s" reason);
+      retry ()
+  | Error ((Inbox.Error.Request _ | Inbox.Error.Malformed _) as e) ->
+      (* not transient by nature: alert, and decide whether to go on *)
+      Logs.err (fun m -> m "inbox dispatcher: %s" (Inbox.Error.to_string Fun.id e));
+      retry ()
+and retry () =
+  if not !stop_flag then (
+    Eio.Time.Mono.sleep clock 1.0;
+    supervise ())
 in
 supervise ()
 ```
 
-`run` returns `Ok ()` once stopped. The first error of any loop — a
-database failure, a subscriber returning `Error` — stops every loop (a
-loop in the middle of a message finishes it first) and comes back as
-`Error`. The dispatcher does not retry on its own and does not hide
-the error: retrying is the caller's policy, as in the supervisor above,
-and the unprocessed message is picked up by the next `run`.
+`run` returns `Ok ()` once stopped. The first error of any loop stops
+every loop (a loop in the middle of a message finishes it first) and
+comes back as an `Inbox.Error.t`: `Connection` when the database could
+not be reached, `Request` when it refused a statement, `Malformed` when a
+value could not be encoded or decoded, `Subscriber e` when the subscriber
+declined a message with its own error `e`. The dispatcher does not retry
+on its own and does not hide the error: retrying is the caller's policy,
+as in the supervisor above, and the unprocessed message is picked up by
+the next `run`.
 
 ---
 
@@ -261,7 +278,7 @@ let () =
     | Ok p -> p
     | Error e -> failwith (Format.asprintf "%a" Caqti_error.pp e)
   in
-  let provider = provider_of_pool pool in    (* same wrapper as outbox *)
+  let provider = Ascetic_unit_of_work.Caqti_connection_provider.of_pool pool in
   let inbox = Inbox.create ~provider () in
 
   Eio.Fiber.both
@@ -269,17 +286,14 @@ let () =
       (* HTTP listener — see cohttp-eio docs for details *)
       run_http_server ~sw ~env ~handler:(handle_webhook inbox))
     (fun () ->
+      (* An Error from process_order rolls its writes and the mark back
+         and ends the iteration as Inbox.Error.Subscriber. *)
       match
-        Inbox.Iter.iter
-          ~clock:(Eio.Stdenv.mono_clock env)
-          inbox
-          (fun uow msg ->
-            match process_order uow msg with
-            | Ok () -> ()
-            | Error e -> Logs.err (fun m -> m "process: %s" e))
+        Inbox.Iter.iter ~clock:(Eio.Stdenv.mono_clock env) inbox process_order
       with
       | Ok () -> ()
-      | Error e -> Logs.err (fun m -> m "inbox iterator: %s" e))
+      | Error e ->
+          Logs.err (fun m -> m "inbox iterator: %s" (Inbox.Error.to_string Fun.id e)))
 ```
 
 The HTTP path commits to the inbox **immediately** — no business logic
