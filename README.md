@@ -76,6 +76,20 @@ dune build
 dune runtest
 ```
 
+## Verification
+
+`verify/tla/` holds TLA+ models of the outbox and inbox protocols and of
+their composition through a bridge, checked with TLC: only committed
+messages are delivered, nothing is passed over, order per URI survives,
+effects happen exactly once and exactly when a message is marked, and
+every committed message is eventually processed end to end. Three
+configurations are mutants that must fail, so the properties are known
+to bite. See [`verify/tla/README.md`](./verify/tla/README.md).
+
+```sh
+./verify/tla/check.sh    # needs Java and tla2tools.jar, see the script
+```
+
 ## Tests
 
 Most tests are in-process and run with no external dependencies. The
