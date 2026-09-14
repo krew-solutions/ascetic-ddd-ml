@@ -65,7 +65,11 @@ module type S = sig
   (** Release any resources held by the inbox. *)
 
   (** Async-generator-style iterator that yields each eligible message
-      and marks it processed after the body returns from {!Iter.next}. *)
+      with the transaction it was fetched in, and marks it processed when
+      the consumer asks for the next one, so the mark always follows the
+      processing and commits with the consumer's writes. A database
+      failure at any step ends the iterator with that error rather than
+      looking like an empty inbox. *)
   module Iter : sig
     type iter
 
@@ -76,7 +80,11 @@ module type S = sig
       t ->
       iter
 
-    val next : iter -> (uow * Inbox_message.t) option
+    val next : iter -> ((uow * Inbox_message.t) option, string) result
+    (** The next message with its transaction; [Ok None] once the iterator
+        has stopped or been closed; [Error] with the failure that ended
+        it. After an error the iterator is closed and its open transaction
+        rolled back: call {!start} again to retry the message. *)
 
     val close : iter -> unit
 
@@ -86,6 +94,9 @@ module type S = sig
       clock:_ Eio.Time.Mono.t ->
       t ->
       (uow -> Inbox_message.t -> unit) ->
-      unit
+      (unit, string) result
+    (** Run [f] on every message until [stop ()] returns [true], giving
+        [Ok ()], or a database failure ends the iteration, giving
+        [Error]. *)
   end
 end

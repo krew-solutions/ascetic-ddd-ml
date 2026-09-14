@@ -93,6 +93,11 @@ let unwrap = function
   | Ok v -> v
   | Error e -> Alcotest.failf "unexpected Error: %s" e
 
+let contains haystack needle =
+  let h = String.length haystack and n = String.length needle in
+  let rec go i = i + n <= h && (String.sub haystack i n = needle || go (i + 1)) in
+  go 0
+
 (* -------------------------------------------------------------------------- *)
 (* Per-test fixture: setup tables, run body, drop tables                      *)
 (* -------------------------------------------------------------------------- *)
@@ -550,17 +555,38 @@ let test_iterator env uri () =
   in
   let m1 =
     match Outbox.Iter.next it with
-    | Some m -> m
-    | None -> Alcotest.fail "expected first message"
+    | Ok (Some m) -> m
+    | Ok None -> Alcotest.fail "expected first message"
+    | Error e -> Alcotest.fail e
   in
   let m2 =
     match Outbox.Iter.next it with
-    | Some m -> m
-    | None -> Alcotest.fail "expected second message"
+    | Ok (Some m) -> m
+    | Ok None -> Alcotest.fail "expected second message"
+    | Error e -> Alcotest.fail e
   in
   Outbox.Iter.close it;
   Alcotest.(check int) "order 0" 0 (payload_int m1 "order");
   Alcotest.(check int) "order 1" 1 (payload_int m2 "order")
+
+(* A database failure ends the iteration with its error instead of
+   looking like an empty outbox, and the iterator is closed afterwards. *)
+let test_iterator_surfaces_a_database_error env uri () =
+  with_outbox_env env uri @@ fun env conn _outbox ->
+  let broken =
+    Outbox.create ~outbox_table:"outbox_missing_test" ~offsets_table
+      ~provider:(provider_of_connection conn) ()
+  in
+  let it = Outbox.Iter.start ~clock:(Eio.Stdenv.mono_clock env) broken in
+  (match Outbox.Iter.next it with
+  | Error e ->
+      Alcotest.(check bool)
+        "the error names the missing table" true
+        (contains e "outbox_missing_test")
+  | Ok _ -> Alcotest.fail "expected the fetch error");
+  Alcotest.(check bool)
+    "closed after the error" true
+    (Outbox.Iter.next it = Ok None)
 
 let test_for_update_prevents_duplicate_processing env uri () =
   with_outbox_env env uri @@ fun env conn outbox ->
@@ -739,6 +765,8 @@ let cases env uri =
     Alcotest.test_case "run_returns_the_first_error" `Quick
       (test_run_returns_the_first_error env uri);
     Alcotest.test_case "iterator" `Quick (test_iterator env uri);
+    Alcotest.test_case "iterator_surfaces_a_database_error" `Quick
+      (test_iterator_surfaces_a_database_error env uri);
     Alcotest.test_case "for_update_prevents_duplicate_processing" `Quick
       (test_for_update_prevents_duplicate_processing env uri);
   ]

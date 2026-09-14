@@ -436,7 +436,7 @@ module Iter = struct
 
   type status =
     | Yielded of Outbox_message.t * (unit, status) Effect.Deep.continuation
-    | Finished
+    | Finished of (unit, string) result
 
   type state =
     | Initial of (unit -> status)
@@ -447,44 +447,45 @@ module Iter = struct
 
   exception Closed_iterator
 
+  (* The generator body. A database failure at any step, from ensuring the
+     consumer group to acknowledging a yielded message, ends the body with
+     that error; nothing is turned into "no messages". *)
   let body t ~consumer_group ~uri ~clock ~poll_interval ~stop () =
-    let _ =
-      Ascetic_unit_of_work.Caqti_connection_provider.with_connection t.provider (fun conn ->
+    let ( let* ) = Result.bind in
+    let* () =
+      Ascetic_unit_of_work.Caqti_connection_provider.with_connection t.provider
+        (fun conn ->
           let uow = Uow.of_connection conn in
           ensure_consumer_group t uow ~consumer_group ~uri)
     in
     let rec poll () =
-      if stop () then ()
+      if stop () then Ok ()
       else
-        let had_messages = ref false in
-        let _ =
-          Ascetic_unit_of_work.Caqti_connection_provider.with_connection t.provider (fun conn ->
+        let* had_messages =
+          Ascetic_unit_of_work.Caqti_connection_provider.with_connection
+            t.provider (fun conn ->
               in_transaction conn (fun conn ->
                   let uow = Uow.of_connection conn in
-                  match
+                  let* messages =
                     fetch_messages t uow ~consumer_group ~uri ~worker_id:0
                       ~num_workers:1
-                  with
-                  | Error _ -> Ok ()
-                  | Ok [] -> Ok ()
-                  | Ok messages ->
-                      had_messages := true;
-                      List.iter
-                        (fun (m : Outbox_message.t) ->
-                          Effect.perform (Yield_msg m);
-                          let txid =
-                            Option.value m.transaction_id ~default:"0"
-                          in
-                          let pos =
-                            Option.value m.position ~default:0L
-                          in
-                          ignore
-                            (ack_message t uow ~consumer_group ~uri
-                               ~transaction_id:txid ~position:pos))
-                        messages;
-                      Ok ()))
+                  in
+                  let rec deliver = function
+                    | [] -> Ok ()
+                    | (m : Outbox_message.t) :: rest ->
+                        Effect.perform (Yield_msg m);
+                        let txid = Option.value m.transaction_id ~default:"0" in
+                        let pos = Option.value m.position ~default:0L in
+                        let* () =
+                          ack_message t uow ~consumer_group ~uri
+                            ~transaction_id:txid ~position:pos
+                        in
+                        deliver rest
+                  in
+                  let* () = deliver messages in
+                  Ok (messages <> [])))
         in
-        if (not !had_messages) && not (stop ()) then
+        if (not had_messages) && not (stop ()) then
           Eio.Time.Mono.sleep clock poll_interval;
         poll ()
     in
@@ -497,7 +498,7 @@ module Iter = struct
       let open Effect.Deep in
       match_with body ()
         {
-          retc = (fun () -> Finished);
+          retc = (fun outcome -> Finished outcome);
           exnc = raise;
           effc =
             (fun (type a) (eff : a Effect.t) ->
@@ -510,25 +511,19 @@ module Iter = struct
     in
     { state = Initial resume }
 
+  let settle iter = function
+    | Yielded (m, k) ->
+        iter.state <- Suspended k;
+        Ok (Some m)
+    | Finished outcome ->
+        iter.state <- Closed;
+        Result.map (fun () -> None) outcome
+
   let next iter =
     match iter.state with
-    | Closed -> None
-    | Initial resume -> (
-        match resume () with
-        | Yielded (m, k) ->
-            iter.state <- Suspended k;
-            Some m
-        | Finished ->
-            iter.state <- Closed;
-            None)
-    | Suspended k -> (
-        match Effect.Deep.continue k () with
-        | Yielded (m, k') ->
-            iter.state <- Suspended k';
-            Some m
-        | Finished ->
-            iter.state <- Closed;
-            None)
+    | Closed -> Ok None
+    | Initial resume -> settle iter (resume ())
+    | Suspended k -> settle iter (Effect.Deep.continue k ())
 
   let close iter =
     (match iter.state with
@@ -541,7 +536,12 @@ module Iter = struct
   let iter ?consumer_group ?uri ?poll_interval ?stop ~clock t f =
     let it = start ?consumer_group ?uri ?poll_interval ?stop ~clock t in
     let rec loop () =
-      match next it with None -> () | Some m -> f m; loop ()
+      match next it with
+      | Ok None -> Ok ()
+      | Ok (Some m) ->
+          f m;
+          loop ()
+      | Error e -> Error e
     in
     Fun.protect ~finally:(fun () -> close it) loop
 end

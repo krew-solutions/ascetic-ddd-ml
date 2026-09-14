@@ -64,6 +64,11 @@ let unwrap = function
   | Ok v -> v
   | Error e -> Alcotest.failf "unexpected Error: %s" e
 
+let contains haystack needle =
+  let h = String.length haystack and n = String.length needle in
+  let rec go i = i + n <= h && (String.sub haystack i n = needle || go (i + 1)) in
+  go 0
+
 (* -------------------------------------------------------------------------- *)
 (* Per-test fixture                                                           *)
 (* -------------------------------------------------------------------------- *)
@@ -280,17 +285,38 @@ let test_iterator env uri () =
   in
   let _, m1 =
     match Inbox.Iter.next it with
-    | Some pair -> pair
-    | None -> Alcotest.fail "expected first message"
+    | Ok (Some pair) -> pair
+    | Ok None -> Alcotest.fail "expected first message"
+    | Error e -> Alcotest.fail e
   in
   let _, m2 =
     match Inbox.Iter.next it with
-    | Some pair -> pair
-    | None -> Alcotest.fail "expected second message"
+    | Ok (Some pair) -> pair
+    | Ok None -> Alcotest.fail "expected second message"
+    | Error e -> Alcotest.fail e
   in
   Inbox.Iter.close it;
   Alcotest.(check int) "order 0" 0 (payload_int m1 "order");
   Alcotest.(check int) "order 1" 1 (payload_int m2 "order")
+
+(* A database failure ends the iteration with its error instead of
+   looking like an empty inbox, and the iterator is closed afterwards. *)
+let test_iterator_surfaces_a_database_error env uri () =
+  with_inbox_env env uri @@ fun env conn _inbox ->
+  let broken =
+    Inbox.create ~table:"inbox_missing_test" ~sequence
+      ~provider:(Provider.of_connection conn) ()
+  in
+  let it = Inbox.Iter.start ~clock:(Eio.Stdenv.mono_clock env) broken in
+  (match Inbox.Iter.next it with
+  | Error e ->
+      Alcotest.(check bool)
+        "the error names the missing table" true
+        (contains e "inbox_missing_test")
+  | Ok _ -> Alcotest.fail "expected the fetch error");
+  Alcotest.(check bool)
+    "closed after the error" true
+    (Inbox.Iter.next it = Ok None)
 
 let test_run_with_single_worker env uri () =
   with_inbox_env env uri @@ fun env _conn inbox ->
@@ -526,6 +552,8 @@ let cases env uri =
       (test_ordering_by_received_position env uri);
     Alcotest.test_case "routing_by_uri" `Quick (test_routing_by_uri env uri);
     Alcotest.test_case "iterator" `Quick (test_iterator env uri);
+    Alcotest.test_case "iterator_surfaces_a_database_error" `Quick
+      (test_iterator_surfaces_a_database_error env uri);
     Alcotest.test_case "run_with_single_worker" `Quick
       (test_run_with_single_worker env uri);
     Alcotest.test_case "run_with_multiple_workers" `Quick

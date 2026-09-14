@@ -147,15 +147,19 @@ retried.
 ### `Iter.iter` (streaming, recommended)
 
 ```ocaml
-Inbox.Iter.iter
-  ~clock:(Eio.Stdenv.mono_clock env)
-  inbox
-  (fun uow msg ->
-    match msg.uri with
-    | "webhook://orders.example.com" -> handle_order uow msg
-    | "webhook://shipments.example.com" -> handle_shipment uow msg
-    | _ -> Logs.warn (fun m -> m "unknown uri: %s" msg.uri))
+match
+  Inbox.Iter.iter ~clock:(Eio.Stdenv.mono_clock env) inbox (fun uow msg ->
+      match msg.uri with
+      | "webhook://orders.example.com" -> handle_order uow msg
+      | "webhook://shipments.example.com" -> handle_shipment uow msg
+      | _ -> Logs.warn (fun m -> m "unknown uri: %s" msg.uri))
+with
+| Ok () -> ()                                  (* stopped *)
+| Error e -> Logs.err (fun m -> m "inbox iterator: %s" e)
 ```
+
+A database failure at any step ends the iteration with `Error` rather
+than looking like an empty inbox; start again to retry the message.
 
 ### `Inbox.dispatch` (single-batch)
 
@@ -265,13 +269,17 @@ let () =
       (* HTTP listener — see cohttp-eio docs for details *)
       run_http_server ~sw ~env ~handler:(handle_webhook inbox))
     (fun () ->
-      Inbox.Iter.iter
-        ~clock:(Eio.Stdenv.mono_clock env)
-        inbox
-        (fun uow msg ->
-          match process_order uow msg with
-          | Ok () -> ()
-          | Error e -> Logs.err (fun m -> m "process: %s" e)))
+      match
+        Inbox.Iter.iter
+          ~clock:(Eio.Stdenv.mono_clock env)
+          inbox
+          (fun uow msg ->
+            match process_order uow msg with
+            | Ok () -> ()
+            | Error e -> Logs.err (fun m -> m "process: %s" e))
+      with
+      | Ok () -> ()
+      | Error e -> Logs.err (fun m -> m "inbox iterator: %s" e))
 ```
 
 The HTTP path commits to the inbox **immediately** — no business logic

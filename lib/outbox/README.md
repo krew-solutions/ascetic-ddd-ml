@@ -157,18 +157,21 @@ Simplest for "process each message and move on":
 ```ocaml
 let subscriber (msg : Outbox_message.t) =
   Logs.info (fun m -> m "got %s" msg.uri);
-  (* do work; raise / Error → message redelivered *)
+  (* do work; raising rolls the open batch back, and it is redelivered *)
 in
-Outbox.Iter.iter
-  ~clock:(Eio.Stdenv.mono_clock env)
-  ~consumer_group:"my-service"
-  outbox
-  subscriber
+match
+  Outbox.Iter.iter ~clock:(Eio.Stdenv.mono_clock env)
+    ~consumer_group:"my-service" outbox subscriber
+with
+| Ok () -> ()                                  (* stopped *)
+| Error e -> Logs.err (fun m -> m "outbox iterator: %s" e)
 ```
 
 Backed by OCaml 5 effect handlers; each batch is fetched in one
 transaction and acks happen per message. Keep the subscriber fast — the
-batch transaction stays open for the whole batch.
+batch transaction stays open for the whole batch. A database failure at
+any step ends the iteration with `Error` rather than looking like an
+empty outbox; start again to resume from the last acknowledged position.
 
 ### `Outbox.dispatch` (manual single-batch)
 

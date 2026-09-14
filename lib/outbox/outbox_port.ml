@@ -89,7 +89,13 @@ module type S = sig
     (unit, string) result
   (** Force-set the position for a consumer group. *)
 
-  (** Async-generator-style iterator with per-message ack. *)
+  (** Async-generator-style iterator with per-message ack.
+
+      Each batch is fetched in one transaction; a message is acknowledged
+      when the consumer asks for the next one, so the acknowledgement
+      always follows the processing. A database failure at any step, from
+      ensuring the consumer group to acknowledging, ends the iterator with
+      that error rather than looking like an empty outbox. *)
   module Iter : sig
     type iter
 
@@ -102,7 +108,11 @@ module type S = sig
       t ->
       iter
 
-    val next : iter -> Outbox_message.t option
+    val next : iter -> (Outbox_message.t option, string) result
+    (** The next message; [Ok None] once the iterator has stopped or been
+        closed; [Error] with the failure that ended it. After an error the
+        iterator is closed and its open transaction rolled back: call
+        {!start} again to resume from the last acknowledged position. *)
 
     val close : iter -> unit
 
@@ -114,6 +124,9 @@ module type S = sig
       clock:_ Eio.Time.Mono.t ->
       t ->
       (Outbox_message.t -> unit) ->
-      unit
+      (unit, string) result
+    (** Run [f] on every message until [stop ()] returns [true], giving
+        [Ok ()], or a database failure ends the iteration, giving
+        [Error]. *)
   end
 end

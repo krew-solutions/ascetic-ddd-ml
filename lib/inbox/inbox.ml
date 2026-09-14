@@ -408,7 +408,7 @@ module Iter = struct
   type status =
     | Yielded of uow * Inbox_message.t
         * (unit, status) Effect.Deep.continuation
-    | Finished
+    | Finished of (unit, string) result
 
   type state =
     | Initial of (unit -> status)
@@ -419,27 +419,30 @@ module Iter = struct
 
   exception Closed_iterator
 
+  (* The generator body. A database failure at any step, from fetching to
+     marking a yielded message processed, ends the body with that error;
+     nothing is turned into "no messages". *)
   let body t ~clock ~poll_interval ~stop () =
+    let ( let* ) = Result.bind in
     let rec poll () =
-      if stop () then ()
+      if stop () then Ok ()
       else
-        let had_message = ref false in
-        let _ =
+        let* had_message =
           Provider.with_connection t.provider (fun conn ->
               in_transaction conn (fun conn ->
                   let uow = Uow.of_connection conn in
-                  match
+                  let* fetched =
                     fetch_next_processable t conn ~offset:0 ~worker_id:0
                       ~num_workers:1
-                  with
-                  | Error _ -> Ok ()
-                  | Ok None -> Ok ()
-                  | Ok (Some msg) ->
-                      had_message := true;
+                  in
+                  match fetched with
+                  | None -> Ok false
+                  | Some msg ->
                       Effect.perform (Yield_msg (uow, msg));
-                      Result.map (fun () -> ()) (mark_processed t conn msg)))
+                      let* () = mark_processed t conn msg in
+                      Ok true))
         in
-        if (not !had_message) && not (stop ()) then
+        if (not had_message) && not (stop ()) then
           Eio.Time.Mono.sleep clock poll_interval;
         poll ()
     in
@@ -451,7 +454,7 @@ module Iter = struct
       let open Effect.Deep in
       match_with body ()
         {
-          retc = (fun () -> Finished);
+          retc = (fun outcome -> Finished outcome);
           exnc = raise;
           effc =
             (fun (type a) (eff : a Effect.t) ->
@@ -465,25 +468,19 @@ module Iter = struct
     in
     { state = Initial resume }
 
+  let settle iter = function
+    | Yielded (uow, m, k) ->
+        iter.state <- Suspended k;
+        Ok (Some (uow, m))
+    | Finished outcome ->
+        iter.state <- Closed;
+        Result.map (fun () -> None) outcome
+
   let next iter =
     match iter.state with
-    | Closed -> None
-    | Initial resume -> (
-        match resume () with
-        | Yielded (uow, m, k) ->
-            iter.state <- Suspended k;
-            Some (uow, m)
-        | Finished ->
-            iter.state <- Closed;
-            None)
-    | Suspended k -> (
-        match Effect.Deep.continue k () with
-        | Yielded (uow, m, k') ->
-            iter.state <- Suspended k';
-            Some (uow, m)
-        | Finished ->
-            iter.state <- Closed;
-            None)
+    | Closed -> Ok None
+    | Initial resume -> settle iter (resume ())
+    | Suspended k -> settle iter (Effect.Deep.continue k ())
 
   let close iter =
     (match iter.state with
@@ -497,8 +494,11 @@ module Iter = struct
     let it = start ?poll_interval ?stop ~clock t in
     let rec loop () =
       match next it with
-      | None -> ()
-      | Some (uow, m) -> f uow m; loop ()
+      | Ok None -> Ok ()
+      | Ok (Some (uow, m)) ->
+          f uow m;
+          loop ()
+      | Error e -> Error e
     in
     Fun.protect ~finally:(fun () -> close it) loop
 end
