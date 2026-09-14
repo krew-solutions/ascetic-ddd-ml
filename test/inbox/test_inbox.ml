@@ -99,7 +99,7 @@ let make_message ?metadata ~stream_position ~stream_id_value ~uri ~payload () =
     ~stream_id:(`Assoc [ ("id", `String stream_id_value) ])
     ~stream_position
     ~uri
-    ~payload:(`Assoc payload)
+    ~payload:(Yojson.Safe.to_string (`Assoc payload))
     ?metadata
     ()
 
@@ -113,7 +113,7 @@ let recording_subscriber recorder : Inbox.subscriber =
   Ok ()
 
 let payload_int (msg : Inbox_message.t) key =
-  match msg.payload with
+  match Yojson.Safe.from_string msg.payload with
   | `Assoc fs -> (
       match List.assoc_opt key fs with
       | Some (`Int n) -> n
@@ -133,7 +133,7 @@ let test_publish_and_dispatch env uri () =
           ~payload:[ ("amount", `Int 100) ]
           ~metadata:
             (`Assoc
-              [ ("event_id", `String "550e8400-e29b-41d4-a716-446655440000") ])
+              [ ("message_id", `String "550e8400-e29b-41d4-a716-446655440000") ])
           ()));
   let recorder = make_recorder () in
   let dispatched =

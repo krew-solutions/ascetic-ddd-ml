@@ -120,11 +120,12 @@ let with_outbox_env env uri body =
       cleanup ();
       raise exn
 
-(* Build an OutboxMessage with a deterministic event_id for idempotency. *)
-let make_message ~event_id ~uri ~payload =
+(* Build an OutboxMessage with a deterministic message_id for idempotency.
+   The payload is serialized here: the outbox stores wire bytes. *)
+let make_message ~message_id ~uri ~payload =
   Outbox_message.make ~uri
-    ~payload:(`Assoc payload)
-    ~metadata:(`Assoc [ ("event_id", `String event_id) ])
+    ~payload:(Yojson.Safe.to_string (`Assoc payload))
+    ~metadata:(`Assoc [ ("message_id", `String message_id) ])
     ()
 
 (* -------------------------------------------------------------------------- *)
@@ -141,7 +142,7 @@ let recording_subscriber recorder : Outbox.subscriber =
   Ok ()
 
 let payload_field msg key =
-  match msg.Outbox_message.payload with
+  match Yojson.Safe.from_string msg.Outbox_message.payload with
   | `Assoc fields -> List.assoc_opt key fields
   | _ -> None
 
@@ -163,7 +164,7 @@ let test_publish_and_dispatch env uri () =
   with_outbox_env env uri @@ fun _env conn outbox ->
   unwrap
     (publish_in_tx outbox conn
-       (make_message ~event_id:"550e8400-e29b-41d4-a716-446655440001"
+       (make_message ~message_id:"550e8400-e29b-41d4-a716-446655440001"
           ~uri:"kafka://orders"
           ~payload:[ ("type", `String "OrderCreated"); ("order_id", `String "123") ]));
   let recorder = make_recorder () in
@@ -189,7 +190,7 @@ let test_dispatch_updates_position env uri () =
   with_outbox_env env uri @@ fun _env conn outbox ->
   unwrap
     (publish_in_tx outbox conn
-       (make_message ~event_id:"550e8400-e29b-41d4-a716-446655440002"
+       (make_message ~message_id:"550e8400-e29b-41d4-a716-446655440002"
           ~uri:"kafka://orders"
           ~payload:[ ("type", `String "OrderCreated") ]));
   let recorder = make_recorder () in
@@ -209,7 +210,7 @@ let test_multiple_consumer_groups env uri () =
   with_outbox_env env uri @@ fun _env conn outbox ->
   unwrap
     (publish_in_tx outbox conn
-       (make_message ~event_id:"550e8400-e29b-41d4-a716-446655440003"
+       (make_message ~message_id:"550e8400-e29b-41d4-a716-446655440003"
           ~uri:"kafka://orders"
           ~payload:[ ("type", `String "OrderCreated") ]));
   let r1 = make_recorder () in
@@ -233,7 +234,7 @@ let test_ordering_by_position env uri () =
     unwrap
       (publish_in_tx outbox conn
          (make_message
-            ~event_id:(Printf.sprintf "550e8400-e29b-41d4-a716-44665544000%d" i)
+            ~message_id:(Printf.sprintf "550e8400-e29b-41d4-a716-44665544000%d" i)
             ~uri:"kafka://orders"
             ~payload:[ ("type", `String "OrderCreated"); ("order", `Int i) ]))
   done;
@@ -257,7 +258,7 @@ let test_batch_dispatch env uri () =
     unwrap
       (publish_in_tx outbox conn
          (make_message
-            ~event_id:
+            ~message_id:
               (Printf.sprintf "550e8400-e29b-41d4-a716-44665544010%d" i)
             ~uri:"kafka://orders"
             ~payload:[ ("type", `String "OrderCreated"); ("order", `Int i) ]))
@@ -308,10 +309,10 @@ let test_get_and_set_position_with_uri env uri () =
 
 let test_dispatch_with_uri_filter env uri () =
   with_outbox_env env uri @@ fun _env conn outbox ->
-  let publish_one event_id u kind =
+  let publish_one message_id u kind =
     unwrap
       (publish_in_tx outbox conn
-         (make_message ~event_id ~uri:u
+         (make_message ~message_id ~uri:u
             ~payload:[ ("type", `String kind) ]))
   in
   publish_one "550e8400-e29b-41d4-a716-446655440080" "kafka://orders"
@@ -353,14 +354,14 @@ let test_multiple_uris_independent_positions env uri () =
     unwrap
       (publish_in_tx outbox conn
          (make_message
-            ~event_id:
+            ~message_id:
               (Printf.sprintf "550e8400-e29b-41d4-a716-44665544009%d" i)
             ~uri:"kafka://orders"
             ~payload:[ ("type", `String "OrderCreated"); ("order", `Int i) ]));
     unwrap
       (publish_in_tx outbox conn
          (make_message
-            ~event_id:
+            ~message_id:
               (Printf.sprintf "550e8400-e29b-41d4-a716-44665544019%d" i)
             ~uri:"kafka://users"
             ~payload:[ ("type", `String "UserCreated"); ("user", `Int i) ]))
@@ -393,21 +394,21 @@ let test_multiple_uris_independent_positions env uri () =
     "users only" true
     (List.for_all (fun m -> m.Outbox_message.uri = "kafka://users") users.seen)
 
-let test_idempotency_via_event_id env uri () =
+let test_idempotency_via_message_id env uri () =
   with_outbox_env env uri @@ fun _env conn outbox ->
   unwrap
     (publish_in_tx outbox conn
-       (make_message ~event_id:"550e8400-e29b-41d4-a716-446655440060"
+       (make_message ~message_id:"550e8400-e29b-41d4-a716-446655440060"
           ~uri:"kafka://orders"
           ~payload:[ ("type", `String "OrderCreated"); ("order_id", `String "123") ]));
   match
     publish_in_tx outbox conn
-      (make_message ~event_id:"550e8400-e29b-41d4-a716-446655440060"
+      (make_message ~message_id:"550e8400-e29b-41d4-a716-446655440060"
          ~uri:"kafka://orders"
          ~payload:[ ("type", `String "OrderCreated"); ("order_id", `String "456") ])
   with
   | Ok () ->
-      Alcotest.fail "expected unique violation on duplicate event_id"
+      Alcotest.fail "expected unique violation on duplicate message_id"
   | Error _ -> ()
 
 let test_visibility_rule env uri () =
@@ -426,8 +427,8 @@ let test_visibility_rule env uri () =
     (unit ->. unit)
       (Printf.sprintf
          "INSERT INTO %s (uri, payload, metadata, transaction_id) \
-          VALUES ('kafka://orders', '{\"type\":\"OrderCreated\"}'::jsonb, \
-          '{\"event_id\":\"550e8400-e29b-41d4-a716-446655440050\"}'::jsonb, \
+          VALUES ('kafka://orders', convert_to('{\"type\":\"OrderCreated\"}', 'UTF8'), \
+          '{\"message_id\":\"550e8400-e29b-41d4-a716-446655440050\"}'::jsonb, \
           pg_current_xact_id())"
          outbox_table)
   in
@@ -461,7 +462,7 @@ let test_run_with_single_worker env uri () =
     unwrap
       (publish_in_tx outbox conn
          (make_message
-            ~event_id:
+            ~message_id:
               (Printf.sprintf "550e8400-e29b-41d4-a716-44665544030%d" i)
             ~uri:"kafka://orders"
             ~payload:[ ("type", `String "OrderCreated"); ("order", `Int i) ]))
@@ -488,7 +489,7 @@ let test_run_with_multiple_workers env uri () =
     unwrap
       (publish_in_tx outbox conn
          (make_message
-            ~event_id:
+            ~message_id:
               (Printf.sprintf "550e8400-e29b-41d4-a716-44665544040%d" i)
             ~uri:"kafka://orders"
             ~payload:[ ("type", `String "OrderCreated"); ("order", `Int i) ]))
@@ -537,7 +538,7 @@ let test_iterator env uri () =
     unwrap
       (publish_in_tx outbox conn
          (make_message
-            ~event_id:
+            ~message_id:
               (Printf.sprintf "550e8400-e29b-41d4-a716-44665544020%d" i)
             ~uri:"kafka://orders"
             ~payload:[ ("type", `String "OrderCreated"); ("order", `Int i) ]))
@@ -563,7 +564,7 @@ let test_for_update_prevents_duplicate_processing env uri () =
   with_outbox_env env uri @@ fun env conn outbox ->
   unwrap
     (publish_in_tx outbox conn
-       (make_message ~event_id:"550e8400-e29b-41d4-a716-446655440070"
+       (make_message ~message_id:"550e8400-e29b-41d4-a716-446655440070"
           ~uri:"kafka://orders"
           ~payload:[ ("type", `String "OrderCreated"); ("order_id", `String "123") ]));
   Eio.Switch.run @@ fun sw ->
@@ -613,7 +614,7 @@ let test_workers_share_uris_without_gaps_or_overlap env uri () =
     unwrap
       (publish_in_tx outbox conn
          (make_message
-            ~event_id:
+            ~message_id:
               (Printf.sprintf "550e8400-e29b-41d4-a716-4466554405%02d" i)
             ~uri:(Printf.sprintf "kafka://orders/order-%d" i)
             ~payload:[ ("type", `String "OrderCreated"); ("order", `Int i) ]))
@@ -682,8 +683,8 @@ let cases env uri =
       (test_dispatch_with_uri_filter env uri);
     Alcotest.test_case "multiple_uris_independent_positions" `Quick
       (test_multiple_uris_independent_positions env uri);
-    Alcotest.test_case "idempotency_via_event_id" `Quick
-      (test_idempotency_via_event_id env uri);
+    Alcotest.test_case "idempotency_via_message_id" `Quick
+      (test_idempotency_via_message_id env uri);
     Alcotest.test_case "visibility_rule" `Quick (test_visibility_rule env uri);
     Alcotest.test_case "run_with_single_worker" `Quick
       (test_run_with_single_worker env uri);

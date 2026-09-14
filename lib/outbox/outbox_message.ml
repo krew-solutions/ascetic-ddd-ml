@@ -5,11 +5,15 @@
 type t = {
   uri : string;
       (** Routing address (e.g. ["kafka://orders"], ["amqp://exchange/key"]). *)
-  payload : Yojson.Safe.t;
-      (** Message payload. By convention contains a ["type"] field used
-          for deserialization on the consumer side. *)
+  payload : string;
+      (** The message as it goes on the wire: serialized, and encrypted
+          where the deployment requires it, before it reaches the outbox.
+          The outbox stores and relays these bytes and never inspects
+          them. *)
   metadata : Yojson.Safe.t;
-      (** Message metadata. Must contain ["event_id"] for idempotency. *)
+      (** Message metadata. Must contain ["message_id"] (a UUID) for
+          idempotency; may carry ["correlation_id"], ["causation_id"] and
+          the like. *)
   created_at : Ptime.t option;
       (** Timestamp the message was inserted (assigned by the database). *)
   position : int64 option;

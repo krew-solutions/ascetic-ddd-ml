@@ -8,7 +8,7 @@ let basic_message ?metadata ?received_position ?processed_position () =
   Inbox_message.make ~tenant_id:"tenant1" ~stream_type:"Order"
     ~stream_id:(`Assoc [ ("id", `String "order-123") ])
     ~stream_position:1 ~uri:"kafka://orders"
-    ~payload:(`Assoc [ ("amount", `Int 100) ])
+    ~payload:"{\"amount\":100}"
     ?metadata ?received_position ?processed_position ()
 
 (* -------------------------------------------------------------------------- *)
@@ -35,13 +35,13 @@ let test_create_message_with_metadata () =
       ~metadata:
         (`Assoc
           [
-            ("event_id", `String "uuid-123");
+            ("message_id", `String "uuid-123");
             ("timestamp", `String "2024-01-01T00:00:00Z");
           ])
       ()
   in
   Alcotest.(check (option string))
-    "event_id" (Some "uuid-123") (Inbox_message.event_id m)
+    "message_id" (Some "uuid-123") (Inbox_message.message_id m)
 
 let test_received_and_processed_positions () =
   let m = basic_message ~received_position:100L ~processed_position:50L () in
@@ -62,7 +62,7 @@ let test_causal_dependencies_empty_when_no_metadata () =
 
 let test_causal_dependencies_empty_when_not_present () =
   let m =
-    basic_message ~metadata:(`Assoc [ ("event_id", `String "uuid-1") ]) ()
+    basic_message ~metadata:(`Assoc [ ("message_id", `String "uuid-1") ]) ()
   in
   Alcotest.(check int)
     "no deps when key missing" 0
@@ -130,20 +130,20 @@ let test_causal_dependencies_skips_malformed () =
   Alcotest.(check string) "valid tenant" "t" (List.hd deps).tenant_id
 
 (* -------------------------------------------------------------------------- *)
-(* event_id                                                                   *)
+(* message_id                                                                   *)
 (* -------------------------------------------------------------------------- *)
 
-let test_event_id_none_when_no_metadata () =
+let test_message_id_none_when_no_metadata () =
   let m = basic_message () in
   Alcotest.(check (option string))
-    "no event_id without metadata" None (Inbox_message.event_id m)
+    "no message_id without metadata" None (Inbox_message.message_id m)
 
-let test_event_id_returns_value () =
+let test_message_id_returns_value () =
   let m =
-    basic_message ~metadata:(`Assoc [ ("event_id", `String "uuid-456") ]) ()
+    basic_message ~metadata:(`Assoc [ ("message_id", `String "uuid-456") ]) ()
   in
   Alcotest.(check (option string))
-    "event_id present" (Some "uuid-456") (Inbox_message.event_id m)
+    "message_id present" (Some "uuid-456") (Inbox_message.message_id m)
 
 (* -------------------------------------------------------------------------- *)
 (* Causal_dependency JSON roundtrip                                            *)
@@ -202,12 +202,12 @@ let () =
           Alcotest.test_case "skips_malformed" `Quick
             test_causal_dependencies_skips_malformed;
         ] );
-      ( "event_id",
+      ( "message_id",
         [
           Alcotest.test_case "none_when_no_metadata" `Quick
-            test_event_id_none_when_no_metadata;
+            test_message_id_none_when_no_metadata;
           Alcotest.test_case "returns_value" `Quick
-            test_event_id_returns_value;
+            test_message_id_returns_value;
         ] );
       ( "Causal_dependency",
         [

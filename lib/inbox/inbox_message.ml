@@ -16,10 +16,12 @@ type t = {
       (** Monotonically increasing position within the stream. *)
   uri : string;
       (** Routing URI (e.g. ["kafka://orders"], ["amqp://exchange/key"]). *)
-  payload : Yojson.Safe.t;
-      (** Event payload. Should contain a ["type"] field by convention. *)
+  payload : string;
+      (** The message as it came off the wire: serialized, and encrypted
+          where the deployment requires it. The inbox stores and hands over
+          these bytes and never inspects them. *)
   metadata : Yojson.Safe.t option;
-      (** Optional metadata. May contain ["event_id"] (used as a unique
+      (** Optional metadata. May contain ["message_id"] (used as a unique
           deduplication key) and/or ["causal_dependencies"]
           (a list of {!Causal_dependency.t} descriptors). *)
   received_position : int64 option;
@@ -54,11 +56,11 @@ let causal_dependencies (m : t) : Causal_dependency.t list =
       | _ -> [])
   | _ -> []
 
-(** [event_id] from [metadata]; [None] if absent. *)
-let event_id (m : t) : string option =
+(** [message_id] from [metadata]; [None] if absent. *)
+let message_id (m : t) : string option =
   match m.metadata with
   | Some (`Assoc fs) -> (
-      match List.assoc_opt "event_id" fs with
+      match List.assoc_opt "message_id" fs with
       | Some (`String s) -> Some s
       | _ -> None)
   | _ -> None

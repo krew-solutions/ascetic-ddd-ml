@@ -63,15 +63,15 @@ let publish_request t =
   let sql =
     Printf.sprintf
       "INSERT INTO %s (uri, payload, metadata, transaction_id) \
-       VALUES (?, ?::jsonb, ?::jsonb, pg_current_xact_id())"
+       VALUES (?, ?, ?::jsonb, pg_current_xact_id())"
       t.outbox_table
   in
-  (t3 string string string ->. unit) sql
+  (t3 string octets string ->. unit) sql
 
 let publish t (uow : Uow.t) (msg : Outbox_message.t) =
   let req = publish_request t in
   exec uow req
-    (msg.uri, json_to_string msg.payload, json_to_string msg.metadata)
+    (msg.uri, msg.payload, json_to_string msg.metadata)
 
 (* -------------------------------------------------------------------------- *)
 (* Consumer groups / offsets                                                  *)
@@ -141,14 +141,14 @@ let set_position t (uow : Uow.t) ~consumer_group ~uri ~transaction_id ~offset =
 
 let row_type =
   let open Caqti_type in
-  (* position, transaction_id::text, uri, payload::text, metadata::text, created_at *)
-  t6 int64 string string string string ptime
+  (* position, transaction_id::text, uri, payload, metadata::text, created_at *)
+  t6 int64 string string octets string ptime
 
 let row_to_message (position, txid, uri, payload, metadata, created_at) :
     Outbox_message.t =
   {
     uri;
-    payload = json_of_string payload;
+    payload;
     metadata = json_of_string metadata;
     created_at = Some created_at;
     position = Some position;
@@ -164,7 +164,7 @@ let base_select t =
     \    WHERE consumer_group = ? AND uri = ?\n\
     \    FOR UPDATE\n\
     \  )\n\
-    \  SELECT \"position\", transaction_id::text, uri, payload::text, \
+    \  SELECT \"position\", transaction_id::text, uri, payload, \
      metadata::text, created_at\n\
     \  FROM %s\n\
     \  WHERE (\n\
@@ -371,7 +371,7 @@ let setup (t : t) (uow : Uow.t) =
       "CREATE TABLE IF NOT EXISTS %s (\n\
       \  \"position\" BIGSERIAL,\n\
       \  \"uri\" VARCHAR(255) NOT NULL,\n\
-      \  \"payload\" JSONB NOT NULL,\n\
+      \  \"payload\" BYTEA NOT NULL,\n\
       \  \"metadata\" JSONB NOT NULL,\n\
       \  \"created_at\" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,\n\
       \  \"transaction_id\" xid8 NOT NULL,\n\
@@ -388,10 +388,10 @@ let setup (t : t) (uow : Uow.t) =
     Printf.sprintf "CREATE INDEX IF NOT EXISTS %s_uri_idx ON %s (\"uri\")"
       t.outbox_table t.outbox_table
   in
-  let event_id_uniq =
+  let message_id_uniq =
     Printf.sprintf
-      "CREATE UNIQUE INDEX IF NOT EXISTS %s_event_id_uniq \
-       ON %s (((metadata->>'event_id')::uuid))"
+      "CREATE UNIQUE INDEX IF NOT EXISTS %s_message_id_uniq \
+       ON %s (((metadata->>'message_id')::uuid))"
       t.outbox_table t.outbox_table
   in
   let offsets_ddl =
@@ -410,7 +410,7 @@ let setup (t : t) (uow : Uow.t) =
   let* () = exec_sql outbox_ddl in
   let* () = exec_sql position_idx in
   let* () = exec_sql uri_idx in
-  let* () = exec_sql event_id_uniq in
+  let* () = exec_sql message_id_uniq in
   let* () = exec_sql offsets_ddl in
   Ok ()
 

@@ -8,6 +8,15 @@ to the same Postgres transaction. A separate dispatcher reads committed
 messages and forwards them to the broker / HTTP endpoint / whatever.
 Either both happen or neither does — no orphan messages, no orphan state.
 
+The outbox is a wire-level stage. `payload` is the message as it goes on
+the wire — serialized, and encrypted where the deployment requires it —
+before it reaches the outbox; it is stored as `BYTEA` and relayed by the
+dispatcher untouched. Plaintext never rests in the database, the message
+is serialized once where its type is known, and the dispatcher depends
+on no schema. `metadata` stays JSONB for routing and support and must
+carry a `message_id` (a UUID) for idempotency. The reasoning is recorded
+in [ADR-0001](../../docs/adr/0001-serialize-and-encrypt-before-the-outbox.md).
+
 For the schema and design rationale (xid8 ordering, visibility rules,
 consumer groups, URI-based partitioning) see [`init.sql`](./init.sql).
 
@@ -125,8 +134,8 @@ let create_order outbox conn order =
         Outbox.publish outbox uow
           (Outbox_message.make
              ~uri:"webhook://order-created"
-             ~payload:(`Assoc [ ("order_id", `String order.id) ])
-             ~metadata:(`Assoc [ ("event_id", `String (Uuidm.to_string (Uuidm.v `V4))) ])
+             ~payload:(Yojson.Safe.to_string (`Assoc [ ("order_id", `String order.id) ]))
+             ~metadata:(`Assoc [ ("message_id", `String (Uuidm.to_string (Uuidm.v `V4))) ])
              ())
       in
       match result with
@@ -207,16 +216,16 @@ let post_webhook ~sw ~client (msg : Outbox_message.t) =
   let path = String.sub msg.uri 10 (String.length msg.uri - 10) in
   let target = Uri.of_string (Printf.sprintf "https://%s" path) in
   let body =
-    Cohttp_eio.Body.of_string (Yojson.Safe.to_string msg.payload)
+    Cohttp_eio.Body.of_string msg.payload
   in
   let headers =
     Cohttp.Header.of_list
       [
         ("Content-Type", "application/json");
-        ( "X-Event-Id",
+        ( "X-Message-Id",
           match msg.metadata with
           | `Assoc fs -> (
-              match List.assoc_opt "event_id" fs with
+              match List.assoc_opt "message_id" fs with
               | Some (`String s) -> s
               | _ -> "")
           | _ -> "" );
@@ -356,6 +365,6 @@ fails loudly if multiple fibers share one connection.
 - **Cleanup**: processed messages stay in the outbox table. Run a
   periodic job to delete rows below `MIN(last_processed_transaction_id)`
   across all consumer groups. SQL example in `init.sql`.
-- **Idempotency**: the `metadata->>'event_id'` UNIQUE INDEX prevents
+- **Idempotency**: the `metadata->>'message_id'` UNIQUE INDEX prevents
   accidental duplicate publishes within the producer. Consumers must
   still be idempotent — at-least-once delivery is part of the contract.

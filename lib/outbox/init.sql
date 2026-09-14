@@ -23,11 +23,12 @@ CREATE TABLE IF NOT EXISTS outbox (
     -- Used for routing to different transports/topics
     "uri" VARCHAR(255) NOT NULL,
 
-    -- Message payload (JSON-serialized)
-    -- Must contain 'type' field for deserialization by consumers
-    "payload" JSONB NOT NULL,
+    -- Message payload as it goes on the wire: serialized, and encrypted
+    -- where required, before it reaches the outbox. Stored and relayed as
+    -- bytes; the outbox never inspects it (see docs/adr/0001).
+    "payload" BYTEA NOT NULL,
 
-    -- Message metadata (must contain 'event_id' for idempotency)
+    -- Message metadata (must contain 'message_id' for idempotency)
     -- Also: correlation_id, causation_id, aggregate info, etc.
     "metadata" JSONB NOT NULL,
 
@@ -51,9 +52,9 @@ CREATE INDEX IF NOT EXISTS outbox_position_idx ON outbox ("position");
 -- Index for queries filtering by uri
 CREATE INDEX IF NOT EXISTS outbox_uri_idx ON outbox ("uri");
 
--- Unique index on event_id from metadata for idempotency
--- Consumers should use metadata->>'event_id' to detect and ignore duplicates
-CREATE UNIQUE INDEX IF NOT EXISTS outbox_event_id_uniq ON outbox (((metadata->>'event_id')::uuid));
+-- Unique index on message_id from metadata for idempotency
+-- Consumers should use metadata->>'message_id' to detect and ignore duplicates
+CREATE UNIQUE INDEX IF NOT EXISTS outbox_message_id_uniq ON outbox (((metadata->>'message_id')::uuid));
 
 
 -- =============================================================================
@@ -102,8 +103,8 @@ CREATE TABLE IF NOT EXISTS outbox_offsets (
 -- INSERT INTO outbox (uri, payload, metadata, transaction_id)
 -- VALUES (
 --     'kafka://orders',
---     '{"type": "OrderCreated", "order_id": "123", "amount": 100}'::jsonb,
---     '{"event_id": "550e8400-e29b-41d4-a716-446655440000"}'::jsonb,
+--     convert_to('{"type": "OrderCreated", "order_id": "123", "amount": 100}', 'UTF8'),
+--     '{"message_id": "550e8400-e29b-41d4-a716-446655440000"}'::jsonb,
 --     pg_current_xact_id()
 -- );
 --

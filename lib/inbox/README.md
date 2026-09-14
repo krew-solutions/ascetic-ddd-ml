@@ -19,6 +19,14 @@ input. This buys you:
   — slow business logic doesn't backpressure the broker; fast bursts
   don't overwhelm the receiver.
 
+The inbox is a wire-level stage, like the outbox. `payload` is the
+message as it came off the wire — serialized, and encrypted where the
+deployment requires it — stored as `BYTEA` and handed to the subscriber
+untouched; decoding happens in the subscriber, where the type is known.
+`metadata` stays JSONB and may carry a `message_id` (a UUID) and
+`causal_dependencies`. The reasoning is recorded in
+[ADR-0001](../../docs/adr/0001-serialize-and-encrypt-before-the-outbox.md).
+
 For the schema and design rationale see [`init.sql`](./init.sql).
 
 ---
@@ -71,10 +79,10 @@ let msg =
     ~stream_id:(`Assoc [ ("id", `String "order-42") ])
     ~stream_position:1
     ~uri:"webhook://orders.example.com"
-    ~payload:(`Assoc [ ("type", `String "OrderCreated") ])
+    ~payload:(Yojson.Safe.to_string (`Assoc [ ("type", `String "OrderCreated") ]))
     ~metadata:
       (`Assoc
-        [ ("event_id", `String "550e8400-e29b-41d4-a716-446655440000") ])
+        [ ("message_id", `String "550e8400-e29b-41d4-a716-446655440000") ])
     ()
 in
 match Inbox.publish inbox msg with
@@ -110,7 +118,7 @@ let dependent =
     ~stream_id:(`Assoc [ ("id", `String "order-42") ])
     ~stream_position:2
     ~uri:"webhook://shipments.example.com"
-    ~payload:(`Assoc [ ("type", `String "OrderShipped") ])
+    ~payload:(Yojson.Safe.to_string (`Assoc [ ("type", `String "OrderShipped") ]))
     ~metadata:
       (`Assoc
         [
@@ -183,11 +191,10 @@ open Ascetic_inbox
 (* ─── HTTP server: receive webhooks, publish to inbox ─────────────── *)
 
 let handle_webhook inbox req body =
-  let payload = Yojson.Safe.from_string body in
-  let event_id =
-    match payload with
+  let message_id =
+    match Yojson.Safe.from_string body with
     | `Assoc fs -> (
-        match List.assoc_opt "event_id" fs with
+        match List.assoc_opt "message_id" fs with
         | Some (`String s) -> s
         | _ -> Uuidm.to_string (Uuidm.v `V4))
     | _ -> Uuidm.to_string (Uuidm.v `V4)
@@ -201,8 +208,8 @@ let handle_webhook inbox req body =
       ~stream_id:(`Assoc [ ("id", `String order_id) ])
       ~stream_position:position
       ~uri:(Printf.sprintf "webhook://orders/%s" order_id)
-      ~payload
-      ~metadata:(`Assoc [ ("event_id", `String event_id) ])
+      ~payload:body
+      ~metadata:(`Assoc [ ("message_id", `String message_id) ])
       ()
   in
   match Inbox.publish inbox msg with
@@ -216,7 +223,7 @@ let process_order (uow : Ascetic_unit_of_work.Caqti_unit_of_work.t)
   (* Subscriber runs inside the inbox transaction.
      Any side effect on [uow] is committed atomically with the
      processed_position stamp. Returning Error rolls back BOTH. *)
-  match msg.payload with
+  match Yojson.Safe.from_string msg.payload with
   | `Assoc fs -> (
       match List.assoc_opt "type" fs with
       | Some (`String "OrderCreated") -> Order_repo.save uow msg
@@ -320,14 +327,14 @@ Two layers of dedup are active:
    `INSERT ... ON CONFLICT DO NOTHING` silently drops duplicates. This
    is the canonical idempotency boundary; design your stream-position
    to be deterministic from the source.
-2. **`metadata->>'event_id'` UNIQUE INDEX** — catches accidental
+2. **`metadata->>'message_id'` UNIQUE INDEX** — catches accidental
    duplicates where the same logical event reaches you with a different
    `(stream_type, stream_id, stream_position)` triple. Insert fails
    loudly with a unique-violation error; treat that as a sign of
    misconfiguration rather than expected duplication.
 
-`event_id` must be a valid UUID — the index casts via
-`((metadata->>'event_id')::uuid)`.
+`message_id` must be a valid UUID — the index casts via
+`((metadata->>'message_id')::uuid)`.
 
 ---
 

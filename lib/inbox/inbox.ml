@@ -60,12 +60,12 @@ let insert_request t =
     Printf.sprintf
       "INSERT INTO %s (tenant_id, stream_type, stream_id, stream_position, \
        uri, payload, metadata) \
-       VALUES (?, ?, ?::jsonb, ?, ?, ?::jsonb, ?::jsonb) \
+       VALUES (?, ?, ?::jsonb, ?, ?, ?, ?::jsonb) \
        ON CONFLICT (tenant_id, stream_type, stream_id, stream_position) \
        DO NOTHING"
       t.table
   in
-  (t7 string string string int string string (option string) ->. unit) sql
+  (t7 string string string int string octets (option string) ->. unit) sql
 
 let publish t (msg : Inbox_message.t) =
   Provider.with_connection t.provider (fun conn ->
@@ -82,7 +82,7 @@ let publish t (msg : Inbox_message.t) =
                 json_to_string msg.stream_id,
                 msg.stream_position,
                 msg.uri,
-                json_to_string msg.payload,
+                msg.payload,
                 metadata_text )
           in
           match result with
@@ -103,9 +103,9 @@ let publish t (msg : Inbox_message.t) =
 let row_type =
   let open Caqti_type in
   (* tenant_id, stream_type, stream_id::text, stream_position, uri,
-     payload::text, metadata::text option, received_position,
+     payload, metadata::text option, received_position,
      processed_position option *)
-  t9 string string string int string string (option string) int64
+  t9 string string string int string octets (option string) int64
     (option int64)
 
 let row_to_message
@@ -114,7 +114,7 @@ let row_to_message
       stream_id_text,
       stream_position,
       uri,
-      payload_text,
+      payload,
       metadata_text,
       received_position,
       processed_position ) : Inbox_message.t =
@@ -124,7 +124,7 @@ let row_to_message
     stream_id = json_of_string stream_id_text;
     stream_position;
     uri;
-    payload = json_of_string payload_text;
+    payload;
     metadata = Option.map json_of_string metadata_text;
     received_position = Some received_position;
     processed_position;
@@ -136,7 +136,7 @@ let fetch_unprocessed_request t ~partition_active =
   let select_cols =
     Printf.sprintf
       "SELECT tenant_id, stream_type, stream_id::text, stream_position, \
-       uri, payload::text, metadata::text, received_position, \
+       uri, payload, metadata::text, received_position, \
        processed_position FROM %s WHERE processed_position IS NULL"
       t.table
   in
@@ -349,8 +349,8 @@ let setup (t : t) (uow : uow) =
       \  stream_type varchar(128) NOT NULL,\n\
       \  stream_id jsonb NOT NULL,\n\
       \  stream_position integer NOT NULL,\n\
-      \  uri varchar(60) NOT NULL,\n\
-      \  payload jsonb NOT NULL,\n\
+      \  uri varchar(255) NOT NULL,\n\
+      \  payload bytea NOT NULL,\n\
       \  metadata jsonb NULL,\n\
       \  received_position bigint NOT NULL UNIQUE \
        DEFAULT nextval('%s'),\n\
@@ -372,10 +372,10 @@ let setup (t : t) (uow : uow) =
        ON %s (processed_position) WHERE processed_position IS NULL"
       t.table t.table
   in
-  let event_id_uniq =
+  let message_id_uniq =
     Printf.sprintf
-      "CREATE UNIQUE INDEX IF NOT EXISTS %s__event_id_uniq \
-       ON %s (((metadata->>'event_id')::uuid))"
+      "CREATE UNIQUE INDEX IF NOT EXISTS %s__message_id_uniq \
+       ON %s (((metadata->>'message_id')::uuid))"
       t.table t.table
   in
   let ( let* ) = Result.bind in
@@ -383,7 +383,7 @@ let setup (t : t) (uow : uow) =
   let* () = exec_sql create_tbl in
   let* () = exec_sql received_idx in
   let* () = exec_sql processed_idx in
-  let* () = exec_sql event_id_uniq in
+  let* () = exec_sql message_id_uniq in
   Ok ()
 
 let cleanup (_ : t) (_ : uow) = Ok ()

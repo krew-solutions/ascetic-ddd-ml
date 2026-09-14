@@ -35,6 +35,9 @@ Domain-Driven Design in a functional style.
 - **Gherkin** (`ascetic_ddd.gherkin`): pure-OCaml `.feature` parser and
   step runner, built on `ocamllex`/`menhir`.
 
+Architecture decisions that shape these blocks are recorded in
+[`docs/adr`](./docs/adr).
+
 ## Install
 
 ```sh
