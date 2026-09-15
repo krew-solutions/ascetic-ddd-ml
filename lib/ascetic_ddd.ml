@@ -11,7 +11,8 @@ module Clock = Clock
 module Domain_event = Domain_event
 module Aggregate_root = Aggregate_root
 
-(* Sub-libraries [ascetic_ddd.unit_of_work], [ascetic_ddd.outbox],
+(* Sub-libraries [ascetic_ddd.unit_of_work], [ascetic_ddd.session] with its
+   [.caqti] and [.memory] backends, [ascetic_ddd.outbox],
    [ascetic_ddd.inbox], [ascetic_ddd.bus], [ascetic_ddd.bus.in_memory],
    [ascetic_ddd.saga], [ascetic_ddd.encryption], [ascetic_ddd.spec], and
    [ascetic_ddd.gherkin] are exposed separately; add them to the

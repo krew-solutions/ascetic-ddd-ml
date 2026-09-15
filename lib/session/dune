@@ -1,0 +1,4 @@
+(library
+ (name ascetic_session)
+ (public_name ascetic_ddd.session)
+ (libraries eio))

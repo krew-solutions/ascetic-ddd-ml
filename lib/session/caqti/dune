@@ -1,0 +1,4 @@
+(library
+ (name ascetic_session_caqti)
+ (public_name ascetic_ddd.session.caqti)
+ (libraries ascetic_ddd.session caqti caqti-eio))

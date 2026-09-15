@@ -1,0 +1,14 @@
+(tests
+ (names test_memory test_pg)
+ (libraries
+  ascetic_ddd.session
+  ascetic_ddd.session.memory
+  ascetic_ddd.session.caqti
+  alcotest
+  eio
+  eio_main
+  caqti
+  caqti-eio
+  caqti-eio.unix
+  caqti-driver-postgresql
+  uri))
