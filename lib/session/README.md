@@ -6,12 +6,12 @@ application layer sees the handle and `atomic`; everything the
 infrastructure needs, the connection, the depth, the observer, lives in the
 concrete module and is reachable only where the type is known.
 
-Three libraries: `ascetic_ddd.session` is the port and the scope algorithm,
+Four libraries: `ascetic_ddd.session` is the port and the scope algorithm,
 with no database behind it and Eio as its only dependency;
 `ascetic_ddd.session.caqti` is PostgreSQL through Caqti;
-`ascetic_ddd.session.memory` is the journal-recording session for tests.
-Application code and its tests link the first two of those, never the
-driver.
+`ascetic_ddd.session.memory` is the journal-recording session for tests;
+`ascetic_ddd.session.composite` makes two sessions act as one. Application
+code and its tests never link the driver.
 
 This library stands beside `ascetic_ddd.unit_of_work`, which the outbox and
 the inbox still use; it is the successor, and the older one stays for
@@ -162,6 +162,47 @@ itself against a live database.
 
 Sessions run inside an Eio fiber, the in-memory one included, because the
 rollback is protected from cancellation.
+
+## Composite sessions
+
+A use case that must write to two stores at once, a data generator's
+target database and its own bookkeeping, say, is written against one
+session as usual; that the session is a pair is a decision of the
+composition root:
+
+```ocaml
+open Ascetic_session_composite
+
+module Session = Composite_session.Make (Caqti_session) (Caqti_session)
+module Pool = Composite_session_pool.Make (Caqti_session_pool) (Caqti_session_pool)
+
+let generate pool batch =
+  Pool.session pool ~lift (fun session ->
+      Session.atomic session ~lift (fun (bookkeeping, target) ->
+          let* rows = Distribution.next bookkeeping batch in
+          Target.insert target rows))
+```
+
+A scope on the composite opens a scope on each delegate, the first one
+outermost: first open, second open, work, second close, first close.
+More than two delegates nest, `Make (A) (Make (B) (C))`, and the handle
+`A.t * (B.t * C.t)` is taken apart by the pattern `(a, (b, c))`. A
+repository pins `type uow` to the product and reaches its delegate by
+position, `fst uow`; the choice is explicit and the application layer
+never sees it.
+
+It is not a distributed transaction. The inner delegate commits first; if
+the outer one then fails to commit, the two diverge, and no composition
+can prevent that. Work that must be undone across stores belongs in a
+saga. What the composite guarantees is one failure path: an error inside
+the scope, or the inner delegate failing to commit, rolls the outer one
+back. So the delegate whose rollback must undo the other's work goes
+first: for the generator, the bookkeeping, so that a target that fails to
+commit leaves the distribution counters untouched.
+
+Of the three shapes the Rust port keeps, pair, tuple and a run-time list,
+only the pair is here: the tuple exists there to avoid method chains that
+OCaml's patterns do not have, and the list waits for shards.
 
 ## PostgreSQL
 

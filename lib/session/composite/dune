@@ -1,0 +1,4 @@
+(library
+ (name ascetic_session_composite)
+ (public_name ascetic_ddd.session.composite)
+ (libraries ascetic_ddd.session))

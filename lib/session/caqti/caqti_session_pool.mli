@@ -2,8 +2,7 @@
 
 type t
 
-include
-  Ascetic_session.Session_pool.S with type t := t and type session := Caqti_session.t
+include Ascetic_session.Session_pool.S with type t := t and type session = Caqti_session.t
 
 val of_connection :
   ?observer:Ascetic_session.Session_observer.t -> (module Caqti_eio.CONNECTION) -> t

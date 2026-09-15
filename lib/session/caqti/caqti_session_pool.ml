@@ -1,3 +1,5 @@
+type session = Caqti_session.t
+
 type t = {
   acquire : 'a. ((module Caqti_eio.CONNECTION) -> 'a) -> ('a, string) result;
   observer : Ascetic_session.Session_observer.t;

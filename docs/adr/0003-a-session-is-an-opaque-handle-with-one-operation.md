@@ -100,5 +100,22 @@ end
   are unchanged; the outbox and the inbox still use them. Migrating them
   and the applications is a later, separate change.
 - Sessions run inside an Eio fiber, the in-memory one included.
-- Composite and REST sessions of the other ports are not here: their
-  consumer is the data generator, and they come with it.
+- REST sessions of the other ports are not here; they come with a
+  consumer.
+
+## Revisited (2026-09-15): composite sessions
+
+The composite session is added as `ascetic_ddd.session.composite`, for
+the data generator that writes to a target database and to its own
+bookkeeping in one operation. The Rust port keeps three shapes, a named
+pair, a tuple of up to eight and a run-time list, because Rust has no
+variadic generics and reaches nested delegates through method chains.
+Only the pair is ported: a functor `Make (A) (B)` whose handle is
+`A.t * B.t`, nesting for more delegates with the pattern `(a, (b, c))`
+as flat access, so the tuple has nothing to add; the run-time list waits
+for a consumer with shards. The capability newtype the Rust port
+requires is not needed either: a repository pins `type uow` to the
+product and picks its delegate by position. The order of delegates is
+part of the design: the one whose rollback must undo the other goes
+first, since the inner delegate commits first and the composite is not a
+distributed transaction.

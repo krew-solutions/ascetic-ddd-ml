@@ -11,11 +11,12 @@ Domain-Driven Design in a functional style.
   `Entity_id`, `Clock`, `Domain_event`, `Aggregate_root`.
 - **Unit of Work** (`ascetic_ddd.unit_of_work`): the abstract
   `Unit_of_work.S` signature plus a Caqti-backed implementation.
-- **Session** (`ascetic_ddd.session`, `.session.caqti`, `.session.memory`):
-  the unit of work as an opaque handle with one operation, `atomic` —
-  nested scopes as savepoints, rollback under cancellation, PostgreSQL
-  through Caqti, a journal-recording session for tests. The successor of
-  `unit_of_work`; see [`lib/session/README.md`](./lib/session/README.md).
+- **Session** (`ascetic_ddd.session`, `.session.caqti`, `.session.memory`,
+  `.session.composite`): the unit of work as an opaque handle with one
+  operation, `atomic` — nested scopes as savepoints, rollback under
+  cancellation, PostgreSQL through Caqti, a journal-recording session for
+  tests, two sessions acting as one. The successor of `unit_of_work`; see
+  [`lib/session/README.md`](./lib/session/README.md).
 - **Outbox** (`ascetic_ddd.outbox`): transactional outbox pattern for
   reliable message publishing — Postgres-backed, ordered via `xid8`,
   with consumer groups, URI-based partitioning and an effect-handler

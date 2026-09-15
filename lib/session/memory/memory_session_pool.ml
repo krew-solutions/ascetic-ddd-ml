@@ -1,3 +1,5 @@
+type session = Memory_session.t
+
 type t = {
   journal : Memory_session.Journal.t;
   observer : Ascetic_session.Session_observer.t;
