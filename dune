@@ -1,0 +1,3 @@
+; The previous outbox and inbox are kept under old/ for comparison only; dune
+; must not build them, or their public names would collide with the new ones.
+(data_only_dirs old)
