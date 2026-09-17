@@ -2,7 +2,14 @@
 
 ## Status
 
-Accepted (2026-09-14).
+Accepted (2026-09-14). Amended (2026-09-17) by the port of the reference
+outbox and inbox over the session: the cases are now `Session` of
+`Session_error.t`, `Database` of `Driver_error.t`, `Subscriber of 'e` and
+`Malformed`; the database and session cases carry the driver's verdict on
+whether the failure is of the moment, which objection 3 below said was not
+available (ADR-0009); `Caqti_error_kind` stays with `unit_of_work` only. The
+inbox has no `Subscriber` case, a failing subscriber being an `Outcome.t`
+(ADR-0004); the outbox keeps `'e`.
 
 ## Context
 

@@ -122,11 +122,15 @@ the abandonment below exists for.
 
 Only a rollback that fails, or is itself cut short, abandons the session:
 the transaction's state is unknown, so every further scope on it is
-refused, an enclosing scope is refused at commit rather than committing
-half-done work, and the connection is disconnected so that a pool drops it
-instead of handing it to the next request inside a stale transaction. A
-`BEGIN`, `COMMIT` or `RELEASE` that raises instead of returning abandons
-the session the same way, because whether it took effect is unknown.
+refused, and an enclosing scope is refused at commit rather than committing
+half-done work, rolling back on its way out all the same. A connection
+still alive therefore comes back with no transaction open on it; one whose
+server is gone fails the pool's check and is dropped. A `BEGIN`, `COMMIT`
+or `RELEASE` that raises instead of returning abandons the session the same
+way, because whether it took effect is unknown; a failure the PostgreSQL
+client library raises rather than returns, a connection lost under a
+statement, is turned into the scope's error first, so that a scope unwinds
+with errors and only a cancellation goes through as an exception.
 
 ## Observers
 
@@ -210,6 +214,16 @@ OCaml's patterns do not have, and the list waits for shards.
 `commit` and `rollback`, and savepoints as one-shot statements. A Caqti
 connection serves one fiber at a time, so work inside a scope is
 sequential; concurrency comes from the pool, one session per fiber.
+
+Beside the session, the Caqti library carries what every PostgreSQL adapter
+over it needs: `Identifier`, a table or sequence name known safe to splice
+into SQL, lower-case letters, digits and underscores, at most forty
+characters; and `Transient`, which errors of the database are of the
+moment, told by SQLSTATE class from the driver's error, so that a loop
+meeting one waits and goes on rather than stopping (ADR-0009). Its verdict
+travels in `Driver_error.t`, the text the driver rendered and whether the
+failure is of the moment, which `Session_error.t` carries in `Acquire`,
+`Begin`, `Commit` and `Abandoned`, and `Session_error.is_transient` reads.
 
 The identity map of the Python and Rust ports is deliberately not here:
 with immutable aggregates, two loads of one row are two equal values with

@@ -1,0 +1,17 @@
+{"deps":[],"event":"received","id":"tenant-1/orders.Order/{\"id\":\"b\"}/1","message_id":"00000000-0000-4000-8000-000000000007","observer":"inbox","received_position":1,"slot":0,"xid":2865}
+{"deps":[],"event":"received","id":"tenant-1/orders.Order/{\"id\":\"a\"}/1","message_id":"00000000-0000-4000-8000-000000000006","observer":"inbox","received_position":2,"slot":0,"xid":2866}
+{"deps":[],"event":"received","id":"tenant-1/orders.Order/{\"id\":\"a\"}/2","message_id":"00000000-0000-4000-8000-000000000005","observer":"inbox","received_position":3,"slot":0,"xid":2867}
+{"event":"fetched","id":"tenant-1/orders.Order/{\"id\":\"b\"}/1","observer":"inbox","slot":0,"slots":1,"snapshot":{"xip":[],"xmax":2868,"xmin":2868}}
+{"event":"handled","id":"tenant-1/orders.Order/{\"id\":\"b\"}/1","observer":"inbox","ok":true,"slot":0}
+{"event":"marked","id":"tenant-1/orders.Order/{\"id\":\"b\"}/1","observer":"inbox","processed_position":4,"slot":0,"woken":[]}
+{"event":"dispatched","observer":"inbox","outcome":"processed","slot":0}
+{"event":"fetched","id":"tenant-1/orders.Order/{\"id\":\"a\"}/1","observer":"inbox","slot":0,"slots":1,"snapshot":{"xip":[],"xmax":2869,"xmin":2869}}
+{"event":"handled","id":"tenant-1/orders.Order/{\"id\":\"a\"}/1","observer":"inbox","ok":true,"slot":0}
+{"event":"marked","id":"tenant-1/orders.Order/{\"id\":\"a\"}/1","observer":"inbox","processed_position":5,"slot":0,"woken":[]}
+{"event":"dispatched","observer":"inbox","outcome":"processed","slot":0}
+{"event":"fetched","id":"tenant-1/orders.Order/{\"id\":\"a\"}/2","observer":"inbox","slot":0,"slots":1,"snapshot":{"xip":[],"xmax":2870,"xmin":2870}}
+{"event":"handled","id":"tenant-1/orders.Order/{\"id\":\"a\"}/2","observer":"inbox","ok":true,"slot":0}
+{"event":"marked","id":"tenant-1/orders.Order/{\"id\":\"a\"}/2","observer":"inbox","processed_position":6,"slot":0,"woken":[]}
+{"event":"dispatched","observer":"inbox","outcome":"processed","slot":0}
+{"event":"fetched","id":null,"observer":"inbox","slot":null,"slots":1,"snapshot":{"xip":[],"xmax":2871,"xmin":2871}}
+{"event":"dispatched","observer":"inbox","outcome":"nothing","slot":null}

@@ -7,6 +7,7 @@ module Session = Ascetic_session_memory.Memory_session
 module Journal = Ascetic_session_memory.Memory_session.Journal
 module Pool = Ascetic_session_memory.Memory_session_pool
 module Error = Ascetic_session.Session_error
+module Driver_error = Ascetic_session.Driver_error
 module Observer = Ascetic_session.Session_observer
 
 (* The application's error type: its own cases plus one for the session
@@ -110,7 +111,8 @@ let test_session_errors_lift_into_the_application_error () =
   in
   let result = atomic session (fun _ -> Ok ()) in
   Alcotest.(check (result unit app_error))
-    "a failed commit is the scope's error" (Error (Session (Error.Commit "disk full")))
+    "a failed commit is the scope's error"
+    (Error (Session (Error.Commit (Driver_error.defect "disk full"))))
     result
 
 let test_second_scope_on_the_same_session_is_refused () =
@@ -181,12 +183,16 @@ let test_a_failed_rollback_abandons_the_session () =
   in
   Alcotest.(check (result unit app_error))
     "the outer scope is refused at commit"
-    (Error (Session (Error.Abandoned "connection lost"))) result;
+    (Error (Session (Error.Abandoned (Driver_error.defect "connection lost"))))
+    result;
   Alcotest.(check bool) "abandoned" true (Session.is_abandoned session);
   Alcotest.(check (result unit app_error))
-    "every further scope is refused" (Error (Session (Error.Abandoned "connection lost")))
+    "every further scope is refused"
+    (Error (Session (Error.Abandoned (Driver_error.defect "connection lost"))))
     (atomic session (fun _ -> Ok ()));
-  Alcotest.check entries "nothing committed" [ "BEGIN"; "SAVEPOINT sp1" ]
+  Alcotest.check entries
+    "nothing committed, and the outer scope rolled back on its way out"
+    [ "BEGIN"; "SAVEPOINT sp1"; "ROLLBACK" ]
     (Journal.entries journal)
 
 let test_a_statement_that_raises_abandons_the_session () =
@@ -200,7 +206,8 @@ let test_a_statement_that_raises_abandons_the_session () =
     "abandoned: whether it committed is unknown" true
     (Session.is_abandoned session);
   Alcotest.(check (result unit app_error))
-    "every further scope is refused" (Error (Session (Error.Abandoned "Stdlib.Exit")))
+    "every further scope is refused"
+    (Error (Session (Error.Abandoned (Driver_error.defect "Stdlib.Exit"))))
     (atomic session (fun _ -> Ok ()))
 
 let test_a_cancelled_scope_is_rolled_back () =

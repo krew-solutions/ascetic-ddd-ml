@@ -6,6 +6,7 @@ module Memory = Ascetic_session_memory.Memory_session
 module Journal = Memory.Journal
 module Memory_pool = Ascetic_session_memory.Memory_session_pool
 module Error = Ascetic_session.Session_error
+module Driver_error = Ascetic_session.Driver_error
 module Observer = Ascetic_session.Session_observer
 module Composite = Ascetic_session_composite.Composite_session.Make (Memory) (Memory)
 
@@ -96,7 +97,8 @@ let test_the_inner_delegate_failing_to_commit_rolls_the_outer_back () =
   let result = atomic session (fun _ -> Ok ()) in
   Alcotest.(check (result unit app_error))
     "the inner commit failure is the scope's error"
-    (Error (Session (Error.Commit "disk full"))) result;
+    (Error (Session (Error.Commit (Driver_error.defect "disk full"))))
+    result;
   Alcotest.check entries "the outer delegate rolled back"
     [ "BEGIN"; "BEGIN"; "ROLLBACK" ]
     (Journal.entries journal)
@@ -110,7 +112,8 @@ let test_the_outer_delegate_failing_to_commit_leaves_the_inner_committed () =
   let result = atomic session (fun _ -> Ok ()) in
   Alcotest.(check (result unit app_error))
     "the outer commit failure is the scope's error"
-    (Error (Session (Error.Commit "disk full"))) result;
+    (Error (Session (Error.Commit (Driver_error.defect "disk full"))))
+    result;
   Alcotest.check entries "the inner delegate's commit stands"
     [ "BEGIN"; "BEGIN"; "COMMIT" ]
     (Journal.entries journal)

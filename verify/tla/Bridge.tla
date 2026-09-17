@@ -1,8 +1,7 @@
 ----------------------------- MODULE Bridge -----------------------------
 (***************************************************************************)
 (* A Messaging Bridge from an outbox to an inbox, composed from the two    *)
-(* modules beside this one: an outbox subscriber that stores each message  *)
-(* in an inbox before it returns.                                          *)
+(* modules beside this one.                                                *)
 (*                                                                         *)
 (* A dispatcher of the source outbox hands each message to the bridge,     *)
 (* whose subscriber stores it in the destination inbox, in a transaction   *)
@@ -16,41 +15,45 @@
 (* over and before the batch was acknowledged, a step this model has; a    *)
 (* failure of the store is the subscriber failing, another step it has.    *)
 (*                                                                         *)
-(* The inbox partitions by URI, as the bridge target does, with one        *)
-(* dispatcher per partition and no causal dependencies: the conditions     *)
-(* under which order is claimed to survive the crossing.                   *)
+(* The inbox is cut by URI, as the bridge target addresses it, and has no  *)
+(* causal dependencies: the conditions under which order is claimed to     *)
+(* survive the crossing.                                                   *)
 (***************************************************************************)
 EXTENDS Naturals, Sequences, FiniteSets
 
 CONSTANTS
   Msgs,
   Uris,
-  SrcWorkers,      \* workers of the source dispatcher
-  DstWorkers,      \* partitions of the destination inbox
-  DstDispatchers,  \* SUBSET (DstWorkers \X Nat)
+  SrcSlots,        \* slots of the source outbox
+  DstSlots,        \* slots of the destination inbox, a dispatcher each
   BatchSize,
   MaxCrashes,      \* per side
   StoreBeforeAck,  \* TRUE: a message is stored in the inbox before the subscriber returns, as implemented
+  SrcGroup,        \* the consumer group of the source dispatchers
   None
 
-Group == "bridge"
-SrcDispatchers == {Group} \X SrcWorkers
+SrcDispatchers == {SrcGroup} \X SrcSlots
 
 \* The source outbox, then the destination inbox.
 VARIABLES uriOf, srcAssign, txState, xid, pos, nextXid, nextPos, position, batch, done, delivered, srcCrashes,
           part, received, recvPos, nextRecv, processed, effects, holding, procOrder, dstCrashes,
+          attempts, due, parked, resolved, admin, waiting, expired,
           pending  \* SUBSET Msgs: handed over but not yet stored, when the store is deferred
 
 vars == <<uriOf, srcAssign, txState, xid, pos, nextXid, nextPos, position, batch, done, delivered, srcCrashes,
-          part, received, recvPos, nextRecv, processed, effects, holding, procOrder, dstCrashes, pending>>
+          part, received, recvPos, nextRecv, processed, effects, holding, procOrder, dstCrashes,
+          attempts, due, parked, resolved, admin, waiting, expired, pending>>
 
 Src == INSTANCE Outbox WITH
-  Groups <- {Group}, Workers <- SrcWorkers, VisibilityRule <- TRUE,
+  Groups <- {SrcGroup}, Slots <- SrcSlots, VisibilityRule <- TRUE, RehashAllowed <- FALSE,
   assign <- srcAssign, crashes <- srcCrashes
 
+\* A destination failure is a crash here; recorded attempts, backoff and
+\* parking are the inbox's own matter, checked in Inbox.tla.
 Dst == INSTANCE Inbox WITH
-  Deps <- [m \in Msgs |-> {}], Arrives <- Msgs, Workers <- DstWorkers,
-  Dispatchers <- DstDispatchers, SkipIneligible <- TRUE,
+  Deps <- [m \in Msgs |-> {}], Arrives <- Msgs, Slots <- DstSlots,
+  WaitsOnDependencies <- TRUE, WaitExpires <- FALSE,
+  Poison <- {}, MaxAttempts <- 0, BlockOnBackoff <- TRUE, MaxAdmin <- 0, AtomicWait <- TRUE,
   crashes <- dstCrashes
 
 (* ------------------------------------------------------------------------ *)
@@ -58,12 +61,13 @@ Dst == INSTANCE Inbox WITH
 Init ==
   /\ Src!Init
   /\ Dst!Init
-  \* the inbox partitions by URI: messages of one URI share a partition
+  \* the inbox is cut by URI: messages of one URI share a slot
   /\ \A a, b \in Msgs : uriOf[a] = uriOf[b] => part[a] = part[b]
   /\ pending = {}
 
 SrcUnchanged == UNCHANGED <<uriOf, srcAssign, txState, xid, pos, nextXid, nextPos, position, batch, done, delivered, srcCrashes>>
-DstUnchanged == UNCHANGED <<part, received, recvPos, nextRecv, processed, effects, holding, procOrder, dstCrashes>>
+DstUnchanged == UNCHANGED <<part, received, recvPos, nextRecv, processed, effects, holding, procOrder, dstCrashes,
+                            attempts, due, parked, resolved, admin, waiting, expired>>
 
 \* Every action names both sides, so that fairness over it is well defined.
 
@@ -90,9 +94,8 @@ Die(d) ==
 \* transaction of the inbox's own, and the outbox counts it handled.  A
 \* message stored before, redelivered after a crash, is the same row.
 \* With StoreBeforeAck off, the message only counts as handled here and is
-\* stored later, by Store: the shape of an earlier port's channel API, where
-\* a message was acknowledged on delivery to the consumer rather than on
-\* completion.
+\* stored later, by Store: the shape of the Go channel API, where a message
+\* was acknowledged on delivery to the consumer rather than on completion.
 Forward(d) ==
   /\ Src!Handle(d)
   /\ LET m == batch[d][done[d] + 1]
@@ -115,13 +118,13 @@ DstCrash(d) == Dst!Crash(d) /\ SrcUnchanged /\ UNCHANGED pending
 Next ==
   \/ \E m \in Msgs : Produce(m) \/ Store(m)
   \/ \E d \in SrcDispatchers : SrcFetch(d) \/ Forward(d) \/ SrcAck(d) \/ Die(d)
-  \/ \E d \in DstDispatchers : DstFetch(d) \/ DstCommit(d) \/ DstCrash(d)
+  \/ \E d \in DstSlots : DstFetch(d) \/ DstCommit(d) \/ DstCrash(d)
 
 Fairness ==
   /\ \A m \in Msgs : WF_vars(Ends(m))
   /\ \A m \in Msgs : WF_vars(Store(m))
   /\ \A d \in SrcDispatchers : WF_vars(SrcFetch(d)) /\ WF_vars(Forward(d)) /\ WF_vars(SrcAck(d))
-  /\ \A d \in DstDispatchers : WF_vars(DstFetch(d)) /\ WF_vars(DstCommit(d))
+  /\ \A d \in DstSlots : WF_vars(DstFetch(d)) /\ WF_vars(DstCommit(d))
 
 Spec == Init /\ [][Next]_vars /\ Fairness
 
@@ -145,8 +148,8 @@ EventuallyProcessed == \A m \in Msgs : (txState[m] = "committed") ~> (m \in proc
 Index(m) == CHOOSE i \in 1..Len(procOrder) : procOrder[i] = m
 
 \* Order survives the crossing: messages of one URI are processed in the
-\* order they were published, given one dispatcher per partition and no
-\* causal dependencies.
+\* order they were published, given a cut by URI and no causal
+\* dependencies.
 EndToEndOrder ==
   \A a, b \in processed :
     (uriOf[a] = uriOf[b] /\ Src!Before(Src!Key(a), Src!Key(b))) => Index(a) < Index(b)

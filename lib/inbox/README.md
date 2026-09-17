@@ -1,0 +1,207 @@
+# Inbox
+
+Transactional Inbox on PostgreSQL: incoming messages stored under their
+identity, processed once each in the transaction that marks them processed,
+and held back until what they causally depend on has been processed. A port
+of the Rust reference implementation of these building blocks, over the
+session of `ascetic_ddd.session.caqti`.
+
+```ocaml
+open Ascetic_inbox
+
+(* at the edge: a bus subscriber hands the message over *)
+Pg_inbox.publish inbox message
+
+(* a processing loop; [tx] is the transaction the mark commits in *)
+Pg_inbox.run inbox ~clock ~shutdown (fun tx message -> handle tx message)
+```
+
+## What it guarantees
+
+* **Idempotency.** A message's identity is
+  `(tenant_id, stream_type, stream_id, stream_position)` and is the primary
+  key; receiving it again is `ON CONFLICT DO NOTHING`. A `message_id` in the
+  metadata is unique in the table as well.
+* **Once, with the work.** The subscriber runs inside the transaction that
+  marks the message processed, and is given that transaction. Its writes and
+  the mark commit together or not at all.
+* **Causal order.** A message may name, in `metadata.causal_dependencies`,
+  the messages that must be processed first. It is set aside until they are,
+  and woken by the mark of the last of them.
+* **One dispatcher at a time per slot.** A row carries its slot, the hash of
+  a partition key, the URI or the stream, and a dispatcher is whoever holds
+  the lock on that slot's row for the length of a transaction. With causal
+  dependencies, cut by stream.
+
+## The port and the adapter
+
+The edge sees `Inbox_port.S`, one operation, `publish`. Processing,
+`dispatch`, `run`, `setup`, the operator's `parked`, `unpark` and `resolve`,
+is on `Pg_inbox`, because it is the business of a separate loop. The
+subscriber is `Caqti_session.t -> Inbox_message.t -> (unit, Failure.t) result`:
+it writes through the session it is given, and says, when it fails, whether
+trying again can help.
+
+## Dependencies
+
+A message may name causal dependencies, messages that must be processed
+before it, and may arrive before them. The walk looks at the head of the
+queue only: a head whose dependencies are not all processed is set aside to
+wait for the first missing one, `waiting_for`, out of the queue, and the
+statement that marks that dependency processed puts every row waiting for it
+back, in the same transaction. Nothing polls for a dependency, and a waiting
+row costs the walk nothing. The row stays in the table, so a later arrival of
+the same message is still a duplicate. With `~max_wait` a row waiting
+longer is parked with the dependency named in `last_error`; by default it
+waits for ever (ADR-0005).
+
+Setting a head aside is the whole of that `dispatch`, `Outcome.Set_aside`:
+the wait is committed at once, and the next call takes the slot's next head.
+The wait and the mark of the dependency take a transaction-level advisory
+lock on the dependency's identity, the wait before its last look at the
+dependency, the mark before the mark; under READ COMMITTED a mark cannot see
+a wait that is not committed, and without the lock a mark could slip between
+the look and the wait, and the row would wait for a processed dependency for
+ever (ADR-0008). The mark takes the lock only on tables with more than one
+slot: with one, every dispatcher serializes on it.
+
+## Failures, backoff and parking
+
+A subscriber that fails does not roll the whole transaction back. It runs in
+a savepoint; its writes roll back to it, and the transaction goes on to
+record the attempt: `attempts`, `last_error`, and `next_attempt_at`. Until
+that time the message is not taken, and it holds its slot, the rows behind
+it wait, so that the order of arrival survives the failure; a retry topic
+would let them pass and lose it. After `max_attempts` failures the message
+is parked: `parked_at` is set, the selection passes it by, the slot flows,
+and the row stays where it is, so a later arrival of the same message is
+still a duplicate. Off by default: unlimited attempts, no backoff, the
+message is taken again at the next call (ADR-0004).
+
+```ocaml
+let inbox =
+  Pg_inbox.create pool
+    ~retries:(Retries.with_backoff (Retries.up_to 5) (Retries.exponential ~base:1.0 ~cap:300.0))
+
+match Pg_inbox.dispatch inbox subscriber with
+| Ok Processed -> ...
+| Ok (Failed { attempts; parked }) -> ...
+| Ok Set_aside -> ...
+| Ok Nothing -> ...
+| Error error -> ...
+
+let* parked = Pg_inbox.parked inbox session in
+let* _ = Pg_inbox.unpark inbox session message in   (* another go, attempts reset *)
+let* _ = Pg_inbox.resolve inbox session message in  (* or: processed by hand, no effects *)
+```
+
+Only errors the subscriber returns are counted. A message that kills the
+process is retried on restart with the count unchanged; counting at delivery
+would need a lease with a timeout, which the inbox does without. A message
+depending on a parked one waits, as it waits for a dependency that never
+arrived, until the parked one is unparked and processed or resolved.
+
+A subscriber's error is a `Failure.t`. `Failure.transient` is the ordinary
+failure: the message is tried again as above. `Failure.permanent` is the
+subscriber's verdict that no retry will ever succeed, a payload it cannot
+read, an invariant the message breaks, and the message is parked at once,
+attempts left or not. Errors of the database are the loop's business, not
+the subscriber's: a loop of `run` that meets an error of the moment, a lock
+cycle the server broke, a connection lost, a server going down, told by
+SQLSTATE in `Ascetic_session_caqti.Transient`, waits, longer with each one in
+a row up to `max_pause`, and goes on; a defect stops every loop and `run`
+returns it (ADR-0009).
+
+```ocaml
+let subscriber tx (message : Inbox_message.t) =
+  match decode message.payload with
+  | Error reason -> Error (Failure.permanent reason)   (* no retry will read it *)
+  | Ok order -> Result.map_error Failure.transient (place tx order)  (* any other error: tried again *)
+```
+
+## Slots
+
+A row carries its slot, `hashtext(<partition key>) % slots` with the sign
+bit cleared, stored at insert; the key, `Partition_key.by_uri` or
+`by_stream`, and the number of slots are fixed for the life of the table,
+`~partition` and `~slots` before `setup` creates it, the URI and one slot by
+default. The table `<table>_slots` has one row per slot. A dispatcher has no
+identity: `dispatch inbox subscriber` takes whichever slot has a due head
+and is held by nobody, least recently served first, locks that slot's row
+for the length of the transaction, `FOR UPDATE SKIP LOCKED`, and works the
+head of that slot. Any number of loops in any number of processes share the
+slots through the locks alone,
+`run inbox ~clock ~loops:{ concurrency; poll_interval; max_pause } ~shutdown subscriber`;
+a process that dies releases its slot with its transaction, and the next
+poll of a survivor takes it. One slot is the order of arrival over the whole
+table; more slots are parallelism, and order within a stream still, since a
+stream is in one slot. A head waiting for its backoff holds its slot, and
+the other slots flow. Changing the number of slots or the key moves rows
+between slots and is a migration, not a restart: `setup` refuses a table
+cut otherwise (ADR-0007).
+
+Taking a slot is one statement, and reading its head another, under a
+snapshot taken after the lock: a statement's snapshot predates the lock it
+takes, and what the slot's previous holder committed in between, its head
+processed, set aside, put in backoff, is out of the first statement's
+sight. The head index, `(slot, received_position)` over the rows neither
+processed, parked nor waiting, is the only index in `received_position`
+order on purpose: beside a second one over the whole column the planner of
+the reference implementation walked that one from the first row, past the
+whole processed history, 89 ms at sixteen slots against 0.2.
+
+## Observing the inbox
+
+`Pg_inbox.create ~observer` attaches an `Inbox_observer.t`, in the shape of
+the session and outbox observers: a synchronous, infallible record of
+functions, composed with `Inbox_observer.all`, fixed when the inbox is
+built. It is told of a message received, with its order of arrival, its slot
+and the id of the storing transaction, or that the identity was already
+there; a row set aside to wait for a dependency, which is the whole of that
+dispatch; a slot taken and its head, or no slot, or a slot taken with
+nothing due in it; the subscriber's outcome; the mark, with its order of
+processing and the rows it woke; the attempt recorded after a failure, with
+whether it parked the message; rows whose wait ran out, parked; the
+dispatcher's transaction closed, committed or rolled back; a message
+unparked or resolved by an operator, with the rows the resolve woke. A
+dispatcher's events name the slot it holds, which is what tells one
+dispatcher's events from another's when several run at once: a slot has one
+holder at a time. A stored message comes with the id of the transaction that
+stored it, and every step of a walk over the table with the snapshot its
+statement ran under, so that a recorded run says which rows each walk could
+see whatever order two fibers' events were logged in. These are the actions
+of the protocol model in `verify/tla/Inbox.tla`, with the steps the model
+folds into one made visible, so a recording observer yields a trace the
+model can be checked against. The tests with one dispatcher at a time do
+exactly that, through the recorder of `ascetic_ddd.trace`: with
+`ASCETIC_DDD_TRACE_DIR` set they write one JSON line per event, and
+`verify/tla/check.sh` replays those files through the model. A test with
+several dispatchers at once records nothing, the order its events are logged
+in is not the order of their commits, and asserts the table's state instead.
+
+## What is not here
+
+The inbox as a channel of the message bus, a bridge from a broker channel
+into the inbox and a transactional consumer out of it, is not ported yet:
+`ascetic_ddd.bus` carries typed values, not wire messages with headers.
+Until then a bus subscriber calls `publish` itself, and `run` is the
+processing loop.
+
+## Deviations from the reference implementation
+
+* A subscriber's failure carries its text, `Failure.Transient of string`
+  and `Permanent of string`, where the reference boxes an error: the row
+  records the text as `last_error`, and nothing else reads the value.
+* The transaction ids, the positions and the slots are `int`; durations are
+  seconds as `float`; the shutdown is an `Eio.Promise.t`.
+* `Inbox_error.t` has no subscriber case: a failing subscriber is an
+  `Outcome.t`, never an error.
+* The bus channel is not ported yet, see above.
+
+## Testing
+
+```bash
+docker compose up -d
+export TEST_DATABASE_URL=postgresql://test:test@localhost:55432/test
+dune test test/inbox
+```

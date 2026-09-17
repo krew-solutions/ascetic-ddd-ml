@@ -17,16 +17,23 @@ Domain-Driven Design in a functional style.
   cancellation, PostgreSQL through Caqti, a journal-recording session for
   tests, two sessions acting as one. The successor of `unit_of_work`; see
   [`lib/session/README.md`](./lib/session/README.md).
-- **Outbox** (`ascetic_ddd.outbox`): transactional outbox pattern for
-  reliable message publishing — Postgres-backed, ordered via `xid8`,
-  with consumer groups, URI-based partitioning and an effect-handler
-  iterator. See [`lib/outbox/README.md`](./lib/outbox/README.md) for
-  usage.
-- **Inbox** (`ascetic_ddd.inbox`): transactional inbox pattern for
-  reliable ingestion — idempotent on
-  `(tenant_id, stream_type, stream_id, stream_position)`, causal
-  dependencies, URI/stream partitioning. See
-  [`lib/inbox/README.md`](./lib/inbox/README.md) for usage.
+- **Outbox** (`ascetic_ddd.outbox`): transactional outbox on PostgreSQL
+  over the session — a message committed with the state change it
+  announces, dispatched in `(xid8, position)` order at least once; slots
+  stored with the row, dispatchers without identity sharing a selection
+  through locks alone, loops that wait on an error of the moment and stop
+  on a defect, an observer in the vocabulary of the protocol model. See
+  [`lib/outbox/README.md`](./lib/outbox/README.md).
+- **Inbox** (`ascetic_ddd.inbox`): transactional inbox on PostgreSQL over
+  the session — idempotent on
+  `(tenant_id, stream_type, stream_id, stream_position)`, processed once in
+  the transaction that marks it, causal dependencies waited for out of the
+  queue and woken by the dependency's mark, failed messages retried with a
+  backoff and parked after their attempts, slots by URI or by stream. See
+  [`lib/inbox/README.md`](./lib/inbox/README.md).
+- **Trace** (`ascetic_ddd.trace`): an observer of the outbox and the inbox
+  that records every event as a line of JSON, so a test run can be checked
+  against the protocol models. See [`lib/trace/README.md`](./lib/trace/README.md).
 - **Bus** (`ascetic_ddd.bus`, `ascetic_ddd.bus.in_memory`):
   scheme-dispatched publish/subscribe over opaque wire payloads —
   URI-routed adapters, consumer groups, and an `Eio`-based in-memory
@@ -84,24 +91,31 @@ dune runtest
 
 ## Verification
 
-`verify/tla/` holds TLA+ models of the outbox and inbox protocols and of
-their composition through a bridge, checked with TLC: only committed
+`verify/tla/` holds TLA+ models of the outbox and inbox protocols, of the
+inbox's statements against PostgreSQL under READ COMMITTED, and of the
+composition of the two through a bridge, checked with TLC: only committed
 messages are delivered, nothing is passed over, order per URI survives,
-effects happen exactly once and exactly when a message is marked, and
-every committed message is eventually processed end to end. Three
-configurations are mutants that must fail, so the properties are known
-to bite. See [`verify/tla/README.md`](./verify/tla/README.md).
+effects happen exactly once and exactly when a message is marked, a message
+waits only for a dependency not yet processed, and every committed message
+is eventually processed end to end. Ten configurations are mutants that
+must fail, so the properties are known to bite. The test suites record what
+their outbox and inbox reported as JSON lines, and `check.sh` replays every
+recorded run through the model: trace validation, the code following the
+protocol on the runs the tests exercise. See
+[`verify/tla/README.md`](./verify/tla/README.md).
 
 ```sh
-./verify/tla/check.sh    # needs Java and tla2tools.jar, see the script
+./verify/tla/check.sh    # needs Java, tla2tools.jar and Python 3, see the script
 ```
 
 ## Tests
 
 Most tests are in-process and run with no external dependencies. The
-outbox suite (`test/outbox/`) is an integration test against a real
-PostgreSQL — it is skipped automatically when `TEST_DATABASE_URL` is not
-set, so `dune runtest` is always green out of the box.
+outbox, inbox, bridge and PostgreSQL session suites (`test/outbox/`,
+`test/inbox/`, `test/trace/`, `test/session/test_pg.ml`) are integration
+tests against a real PostgreSQL — they are skipped automatically when
+`TEST_DATABASE_URL` is not set, so `dune runtest` is always green out of the
+box.
 
 ### Local run with Docker
 

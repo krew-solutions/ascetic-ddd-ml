@@ -1,0 +1,4 @@
+(library
+ (name ascetic_trace)
+ (public_name ascetic_ddd.trace)
+ (libraries ascetic_ddd.outbox ascetic_ddd.inbox yojson))

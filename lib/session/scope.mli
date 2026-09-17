@@ -3,21 +3,18 @@
     share is everything that makes a scope correct, and what differs is only where the
     statements go. *)
 
-(** What a backend issues: the six statements of a scope, and how to give a connection up.
-    Each returns the reason as text when it fails. *)
+(** What a backend issues: the six statements of a scope. Each says, when it fails, what
+    the driver said and whether the failure is of the moment; none raises for a failure of
+    the driver, so that a scope unwinds with errors rather than exceptions. *)
 module type BACKEND = sig
   type conn
 
-  val begin_ : conn -> (unit, string) result
-  val commit : conn -> (unit, string) result
-  val rollback : conn -> (unit, string) result
-  val savepoint : conn -> string -> (unit, string) result
-  val release : conn -> string -> (unit, string) result
-  val rollback_to : conn -> string -> (unit, string) result
-
-  val discard : conn -> unit
-  (** The connection may not be used again: its transaction is in an unknown state. A
-      pooled connection is disconnected so that the pool drops it. *)
+  val begin_ : conn -> (unit, Driver_error.t) result
+  val commit : conn -> (unit, Driver_error.t) result
+  val rollback : conn -> (unit, Driver_error.t) result
+  val savepoint : conn -> string -> (unit, Driver_error.t) result
+  val release : conn -> string -> (unit, Driver_error.t) result
+  val rollback_to : conn -> string -> (unit, Driver_error.t) result
 end
 
 (** A session over a backend. Only what a backend's own interface needs is visible: the

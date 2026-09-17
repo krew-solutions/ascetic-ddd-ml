@@ -1,0 +1,6 @@
+{"event": "published", "message_id": "00000000-0000-4000-8000-000000000030", "observer": "outbox", "position": 1, "uri": "kafka://orders", "xid": 2042302}
+{"event": "published", "message_id": "00000000-0000-4000-8000-000000000046", "observer": "outbox", "position": 2, "uri": "kafka://orders", "xid": 2042369}
+{"event": "fetched", "group": "broker", "horizon": 2042302, "limit": 100, "messages": ["00000000-0000-4000-8000-000000000046"], "observer": "outbox", "slot": 0, "slots": 1}
+{"event": "handled", "group": "broker", "message_id": "00000000-0000-4000-8000-000000000046", "observer": "outbox", "ok": true, "slot": 0}
+{"event": "acked", "group": "broker", "observer": "outbox", "position": 2, "slot": 0, "xid": 2042369}
+{"event": "dispatched", "group": "broker", "observer": "outbox", "outcome": "batch", "slot": 0}

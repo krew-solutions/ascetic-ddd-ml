@@ -13,7 +13,7 @@ module Backend = struct
   (* A failed statement is not recorded: the journal is what ran. *)
   let statement conn sql =
     match conn.fail sql with
-    | Some reason -> Error reason
+    | Some reason -> Error (Ascetic_session.Driver_error.defect reason)
     | None ->
         Journal.record conn.journal sql;
         Ok ()
@@ -24,7 +24,6 @@ module Backend = struct
   let savepoint conn name = statement conn ("SAVEPOINT " ^ name)
   let release conn name = statement conn ("RELEASE SAVEPOINT " ^ name)
   let rollback_to conn name = statement conn ("ROLLBACK TO SAVEPOINT " ^ name)
-  let discard _ = ()
 end
 
 include Ascetic_session.Scope.Make (Backend)

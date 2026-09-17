@@ -23,7 +23,7 @@
  (name ascetic_ddd)
  (synopsis "Reusable DDD building blocks for OCaml")
  (description
-  "A lightweight library providing foundational types and patterns for Domain-Driven Design in a functional style: bounded integers, decimals, entity IDs, clocks, domain events, aggregate roots, unit-of-work (with a Caqti-backed implementation) and its successor, a session with nested transaction scopes, transactional outbox + inbox, a scheme-dispatched message bus with an in-memory adapter, a specification DSL, GDPR-friendly encryption primitives, and a pure-OCaml Gherkin runner.")
+  "A lightweight library providing foundational types and patterns for Domain-Driven Design in a functional style: bounded integers, decimals, entity IDs, clocks, domain events, aggregate roots, unit-of-work (with a Caqti-backed implementation) and its successor, a session with nested transaction scopes, a transactional outbox and inbox on PostgreSQL over that session with a JSON trace recorder for checking test runs against the TLA+ models, a scheme-dispatched message bus with an in-memory adapter, a specification DSL, GDPR-friendly encryption primitives, and a pure-OCaml Gherkin runner.")
  (depends
   (ocaml
    (>= 5.4.0))
@@ -50,8 +50,11 @@
   (caqti-eio
    (>= 2.1))
   (caqti-driver-postgresql
+   (>= 2.1))
+  postgresql
+  (mtime
    (and
-    (>= 2.1)
+    (>= 2.0)
     :with-test))
   menhir
   ppx_deriving

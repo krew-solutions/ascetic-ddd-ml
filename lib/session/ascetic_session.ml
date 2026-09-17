@@ -10,6 +10,7 @@
 
 module Session = Session
 module Session_error = Session_error
+module Driver_error = Driver_error
 module Session_observer = Session_observer
 module Session_pool = Session_pool
 module Scope = Scope

@@ -13,7 +13,7 @@ module Aggregate_root = Aggregate_root
 
 (* Sub-libraries [ascetic_ddd.unit_of_work], [ascetic_ddd.session] with its
    [.caqti], [.memory] and [.composite] sub-libraries, [ascetic_ddd.outbox],
-   [ascetic_ddd.inbox], [ascetic_ddd.bus], [ascetic_ddd.bus.in_memory],
-   [ascetic_ddd.saga], [ascetic_ddd.encryption], [ascetic_ddd.spec], and
-   [ascetic_ddd.gherkin] are exposed separately; add them to the
-   [libraries] field of your dune file individually. *)
+   [ascetic_ddd.inbox], [ascetic_ddd.trace], [ascetic_ddd.bus],
+   [ascetic_ddd.bus.in_memory], [ascetic_ddd.saga], [ascetic_ddd.encryption],
+   [ascetic_ddd.spec], and [ascetic_ddd.gherkin] are exposed separately; add
+   them to the [libraries] field of your dune file individually. *)

@@ -1,5 +1,5 @@
 (tests
- (names test_memory test_composite test_pg)
+ (names test_memory test_composite test_pg test_transient)
  (libraries
   ascetic_ddd.session
   ascetic_ddd.session.memory
@@ -13,3 +13,4 @@
   caqti-eio.unix
   caqti-driver-postgresql
   uri))
+

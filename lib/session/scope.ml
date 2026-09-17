@@ -6,16 +6,12 @@
 module type BACKEND = sig
   type conn
 
-  val begin_ : conn -> (unit, string) result
-  val commit : conn -> (unit, string) result
-  val rollback : conn -> (unit, string) result
-  val savepoint : conn -> string -> (unit, string) result
-  val release : conn -> string -> (unit, string) result
-  val rollback_to : conn -> string -> (unit, string) result
-
-  val discard : conn -> unit
-  (** The connection may not be used again: its transaction is in an unknown state. A
-      pooled connection is disconnected so that the pool drops it. *)
+  val begin_ : conn -> (unit, Driver_error.t) result
+  val commit : conn -> (unit, Driver_error.t) result
+  val rollback : conn -> (unit, Driver_error.t) result
+  val savepoint : conn -> string -> (unit, Driver_error.t) result
+  val release : conn -> string -> (unit, Driver_error.t) result
+  val rollback_to : conn -> string -> (unit, Driver_error.t) result
 end
 
 module Make (B : BACKEND) = struct
@@ -25,7 +21,7 @@ module Make (B : BACKEND) = struct
     mutable savepoints : int;
         (** Names come from a counter shared by the whole session tree, not from the
             depth: two sibling scopes must not get the same name. *)
-    mutable abandoned : string option;
+    mutable abandoned : Driver_error.t option;
   }
 
   type t = { shared : shared; depth : int; mutable scope_open : bool }
@@ -42,10 +38,7 @@ module Make (B : BACKEND) = struct
   let is_abandoned t = Option.is_some t.shared.abandoned
 
   let abandon shared reason =
-    if Option.is_none shared.abandoned then begin
-      shared.abandoned <- Some reason;
-      try B.discard shared.conn with _ -> ()
-    end
+    if Option.is_none shared.abandoned then shared.abandoned <- Some reason
 
   (* Runs under protection from cancellation: a scope that was cancelled
      must still leave the connection clean, and the rollback is itself a
@@ -61,7 +54,7 @@ module Make (B : BACKEND) = struct
         with
         | Ok () -> ()
         | Error reason -> abandon shared reason
-        | exception exn -> abandon shared (Printexc.to_string exn))
+        | exception exn -> abandon shared (Driver_error.defect (Printexc.to_string exn)))
 
   (* A statement that raises rather than returns, cancellation landing inside
      a driver call, leaves the transaction in an unknown state: the session is
@@ -71,7 +64,7 @@ module Make (B : BACKEND) = struct
     | outcome -> outcome
     | exception exn ->
         let bt = Printexc.get_raw_backtrace () in
-        abandon shared (Printexc.to_string exn);
+        abandon shared (Driver_error.defect (Printexc.to_string exn));
         Printexc.raise_with_backtrace exn bt
 
   let run t ~lift scope =
@@ -114,7 +107,10 @@ module Make (B : BACKEND) = struct
         match outcome with
         | Ok _ when Option.is_some shared.abandoned ->
             (* A nested scope could not be rolled back: nothing done since
-               may be committed, and the connection is already discarded. *)
+               may be committed. This scope rolls back on its way out all
+               the same, so that a connection still alive comes back with
+               no transaction open on it. *)
+            roll_back shared savepoint;
             ended Session_observer.Failed;
             Error (lift (Session_error.Abandoned (Option.get shared.abandoned)))
         | Ok value -> (

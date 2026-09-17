@@ -40,8 +40,12 @@ end
   text; it names no driver type.
 - The rollback runs under `Eio.Cancel.protect`, so a cancelled scope still
   leaves the connection clean. A rollback that fails abandons the session:
-  further scopes are refused, an enclosing scope is refused at commit, and
-  the connection is disconnected so that a pool drops it.
+  further scopes are refused, and an enclosing scope is refused at commit
+  and rolls back on its way out. (Amended 2026-09-17: the connection was
+  disconnected at first, which made the Caqti pool raise when it checked
+  the connection on its return and every later statement of the scope raise
+  too; a connection whose server is gone fails the pool's check by itself,
+  and one still alive comes back clean after the enclosing rollback.)
 - The scope algorithm is one functor over a backend of six statements; the
   PostgreSQL session and the in-memory session are its two instances, so a
   journal test proves the algorithm for both.
