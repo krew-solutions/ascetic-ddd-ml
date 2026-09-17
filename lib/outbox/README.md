@@ -15,7 +15,7 @@ dispatcher untouched. Plaintext never rests in the database, the message
 is serialized once where its type is known, and the dispatcher depends
 on no schema. `metadata` stays JSONB for routing and support and must
 carry a `message_id` (a UUID) for idempotency. The reasoning is recorded
-in [ADR-0001](../../docs/adr/0001-serialize-and-encrypt-before-the-outbox.md).
+in [ADR-0001](../../docs/src/adr/0001-serialize-and-encrypt-before-the-outbox.md).
 
 For the schema and design rationale (xid8 ordering, visibility rules,
 consumer groups, URI-based partitioning) see [`init.sql`](./init.sql).

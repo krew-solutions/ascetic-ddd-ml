@@ -42,7 +42,7 @@ Domain-Driven Design in a functional style.
   step runner, built on `ocamllex`/`menhir`.
 
 Architecture decisions that shape these blocks are recorded in
-[`docs/adr`](./docs/adr).
+[`docs/src/adr`](./docs/src/adr).
 
 ## Install
 
