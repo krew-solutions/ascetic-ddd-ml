@@ -25,7 +25,7 @@ deployment requires it — stored as `BYTEA` and handed to the subscriber
 untouched; decoding happens in the subscriber, where the type is known.
 `metadata` stays JSONB and may carry a `message_id` (a UUID) and
 `causal_dependencies`. The reasoning is recorded in
-[ADR-0001](../../docs/adr/0001-serialize-and-encrypt-before-the-outbox.md).
+[ADR-0001](../../docs/src/adr/0001-serialize-and-encrypt-before-the-outbox.md).
 
 For the schema and design rationale see [`init.sql`](./init.sql).
 

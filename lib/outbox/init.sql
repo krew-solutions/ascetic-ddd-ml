@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS outbox (
 
     -- Message payload as it goes on the wire: serialized, and encrypted
     -- where required, before it reaches the outbox. Stored and relayed as
-    -- bytes; the outbox never inspects it (see docs/adr/0001).
+    -- bytes; the outbox never inspects it (see docs/src/adr/0001).
     "payload" BYTEA NOT NULL,
 
     -- Message metadata (must contain 'message_id' for idempotency)

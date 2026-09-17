@@ -7,7 +7,7 @@ CREATE TABLE inbox (
     stream_position integer NOT NULL,
     uri varchar(255) NOT NULL,
     -- The message as it came off the wire: serialized, and encrypted where
-    -- required. Stored and handed over as bytes (see docs/adr/0001).
+    -- required. Stored and handed over as bytes (see docs/src/adr/0001).
     payload bytea NOT NULL,
     metadata jsonb NULL,
     received_position bigint NOT NULL UNIQUE DEFAULT nextval('inbox_received_position_seq'),
