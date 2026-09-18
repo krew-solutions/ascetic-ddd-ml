@@ -34,11 +34,13 @@ Domain-Driven Design in a functional style.
 - **Trace** (`ascetic_ddd.trace`): an observer of the outbox and the inbox
   that records every event as a line of JSON, so a test run can be checked
   against the protocol models. See [`lib/trace/README.md`](./lib/trace/README.md).
-- **Bus** (`ascetic_ddd.bus`, `ascetic_ddd.bus.in_memory`):
-  scheme-dispatched publish/subscribe over opaque wire payloads —
-  URI-routed adapters, consumer groups, and an `Eio`-based in-memory
-  adapter for single-process deployments. See
-  [`lib/bus/README.md`](./lib/bus/README.md) for usage.
+- **Bus** (`ascetic_ddd.bus`, `ascetic_ddd.bus.in_memory`,
+  `ascetic_ddd.bus.kafka`): scheme-dispatched publish/subscribe over opaque
+  wire messages with a key and headers — URI-routed adapters, consumer
+  groups, stages of the wire, a messaging bridge, errors as values, an
+  `Eio`-based in-memory broker for single-process deployments, and an
+  optional Kafka adapter on `kafka-eio`; the outbox and the inbox are
+  channels of it. See [`lib/bus/README.md`](./lib/bus/README.md).
 - **Saga** (`ascetic_ddd.saga`): routing-slip saga pattern for
   long-running workflows with compensation.
 - **Specification** (`ascetic_ddd.spec`): specification-pattern DSL with
@@ -111,8 +113,8 @@ protocol on the runs the tests exercise. See
 ## Tests
 
 Most tests are in-process and run with no external dependencies. The
-outbox, inbox, bridge and PostgreSQL session suites (`test/outbox/`,
-`test/inbox/`, `test/trace/`, `test/session/test_pg.ml`) are integration
+outbox, inbox and PostgreSQL session suites (`test/outbox/`,
+`test/inbox/`, `test/session/test_pg.ml`) are integration
 tests against a real PostgreSQL — they are skipped automatically when
 `TEST_DATABASE_URL` is not set, so `dune runtest` is always green out of the
 box.
@@ -127,9 +129,14 @@ ephemeral `tmpfs` storage):
 ```sh
 docker compose up -d
 export TEST_DATABASE_URL=postgresql://test:test@localhost:55432/test
+export TEST_KAFKA_BROKERS=localhost:59092   # only where kafka-eio is installed
 dune runtest
 docker compose down
 ```
+
+The same file starts a Redpanda broker on `localhost:59092` for the tests of
+the optional Kafka adapter; without `kafka-eio` installed they are not
+built, and without `TEST_KAFKA_BROKERS` they are skipped.
 
 ### Continuous integration
 

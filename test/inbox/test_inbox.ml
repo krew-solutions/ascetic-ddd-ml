@@ -1034,6 +1034,49 @@ let test_a_dependency_that_never_arrives_parks_the_message_after_max_wait env ur
   Alcotest.(check (list string))
     "the cause, then the dependent" [ "user@5"; "order@1" ] (seen ())
 
+(* What the library logged while the body ran: source, level and text. *)
+let logged body =
+  let seen = ref [] in
+  let report src level ~over k msgf =
+    msgf (fun ?header:_ ?tags:_ fmt ->
+        Format.kasprintf
+          (fun text ->
+            seen := (Logs.Src.name src, level, text) :: !seen;
+            over ();
+            k ())
+          fmt)
+  in
+  Logs.set_reporter { Logs.report };
+  Logs.set_level (Some Logs.Warning);
+  Fun.protect
+    ~finally:(fun () -> Logs.set_reporter Logs.nop_reporter)
+    (fun () ->
+      body ();
+      List.rev !seen)
+
+let said logs ~src ~level ~text =
+  List.exists (fun (s, l, t) -> s = src && l = level && contains ~sub:text t) logs
+
+(* A parked message must not be silent when no observer is attached: an
+   attempt is a warning, a parking an error, on the inbox's own source. *)
+let test_a_failed_attempt_and_a_parking_are_logged env uri () =
+  with_fixture ~name:"logged" ~trace:false ~retries:(Retries.up_to 2) env uri @@ fun f ->
+  publish f [ message "a" 1 ];
+  let _, subscriber = failing_on "a@1" in
+  let logs =
+    logged (fun () ->
+        ignore (dispatch f subscriber);
+        ignore (dispatch f subscriber))
+  in
+  Alcotest.(check bool)
+    "the attempt is a warning" true
+    (said logs ~src:"ascetic_ddd.inbox" ~level:Logs.Warning
+       ~text:"attempt 1 on tenant-1/orders.Order/");
+  Alcotest.(check bool)
+    "the parking is an error" true
+    (said logs ~src:"ascetic_ddd.inbox" ~level:Logs.Error
+       ~text:"parked after 2 failed attempts: a@1 is poison")
+
 let cases env uri =
   let case name test = Alcotest.test_case name `Quick (test env uri) in
   [
@@ -1076,6 +1119,8 @@ let cases env uri =
     case "the observer sees the protocol" test_the_observer_sees_the_protocol;
     case "a dependency that never arrives parks the message after max_wait"
       test_a_dependency_that_never_arrives_parks_the_message_after_max_wait;
+    case "a failed attempt and a parking are logged"
+      test_a_failed_attempt_and_a_parking_are_logged;
   ]
 
 let () =

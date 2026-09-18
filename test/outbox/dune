@@ -1,12 +1,15 @@
 (tests
- (names test_outbox test_port)
+ (names test_outbox test_port test_bridge)
  (libraries
   ascetic_ddd.outbox
+  ascetic_ddd.bus
+  ascetic_ddd.bus.in_memory
   ascetic_ddd.session
   ascetic_ddd.session.caqti
   ascetic_ddd.session.memory
   ascetic_ddd.trace
   alcotest
+  logs
   caqti
   caqti-eio
   caqti-eio.unix

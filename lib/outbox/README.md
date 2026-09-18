@@ -63,6 +63,36 @@ struct
 end
 ```
 
+## As a channel of the bus
+
+The outbox is also an adapter of `ascetic_ddd.bus` (ADR-0011),
+`Outbox_channel`. Its producer is transactional, built once at the
+composition root for a destination on another channel, and publishing takes
+the session of the current transaction. Its consumer is the dispatcher: every
+committed row reaches the handler as a wire message whose `destination`
+header is the row's URI, and a `Bridge` to that header is the whole
+dispatcher process.
+
+```ocaml
+let* bus = Bus.register Bus.empty ~scheme:Outbox_channel.scheme (Outbox_channel.adapter ~sw ~clock outbox) in
+let* bus = Bus.register bus ~scheme:"kafka" kafka in
+
+(* in the command handler, inside the transaction *)
+let placed = Outbox_channel.producer outbox ~destination:"kafka://orders/order-7" ~encode:encode_order_placed in
+Caqti_session.atomic session ~lift (fun tx -> Transactional.Producer.publish placed tx event)
+
+(* the dispatcher process *)
+let* dispatcher = Bridge.run (Bridge.create bus) ~from:"outbox://all" ~group:"dispatcher" (Bridge.Header "destination")
+```
+
+Headers travel as string fields of `metadata`, so `message_id` keeps its
+unique index. The dispatcher is a daemon fiber on the switch the adapter was
+given; cancel the subscription to stop it. `~loops` on the adapter says how
+it runs, how many loops in this process, how long one waits, the same
+`Loops.t` that `run` takes. On the bus the outbox is typed by the bus's
+failure, `Ascetic_bus.Failure.t Pg_outbox.t`: that is the error a wire
+handler returns.
+
 ## Errors
 
 `'e Outbox_error.t` is a value the caller can act on: `Session` when the
@@ -126,6 +156,15 @@ in the database, waits, longer with each failure in a row up to `max_pause`,
 and goes on. A defect stops every loop and `run` returns it (ADR-0009). The
 loops run on the Eio clock they are given; sessions run inside an Eio fiber.
 
+## Logging
+
+What must not be silent when no observer is attached goes to a `Logs` source
+of the outbox's own, `Ascetic_outbox.Log.src`, named `ascetic_ddd.outbox`: a
+loop that waits after a failure, the subscriber's or one of the moment in
+the database, and a dispatcher on the bus that starts again after a defect.
+The subscriber's own error is not printed there, its type being the
+caller's; it reaches the observer as it is.
+
 ## What is not here
 
 The outbox keeps every row it ever stored; nothing deletes acknowledged
@@ -133,11 +172,6 @@ messages. Retention is the deployment's: the table is meant to be rotated by
 partitions, which is simpler and cheaper than a cleaner inside the library.
 The fetch does not slow down with the history, because it reads from the
 group's position on.
-
-The outbox as a channel of the message bus, with a bridge from a selection
-to a broker, is not ported yet: `ascetic_ddd.bus` carries typed values, not
-wire messages with headers. Until then the dispatcher's subscriber is where
-the broker's producer goes.
 
 ## Deviations from the reference implementation
 
@@ -150,7 +184,6 @@ the broker's producer goes.
   reference boxes it: OCaml has no universal error type, and the caller's
   own type is what a supervisor matches on (ADR-0002).
 * `created_at` is a `Ptime.t`, not the database's text.
-* The bus channel is not ported yet, see above.
 
 ## Testing
 

@@ -1,182 +1,134 @@
-# Message Bus
+# Bus
 
-Scheme-dispatched publish/subscribe over opaque wire payloads.
-
-The pattern: application code names a destination by URI —
-`in-memory://orders.placed`, `kafka://orders.placed` — and the bus
-routes the call to whichever adapter was registered for that URI's
-scheme. Swapping transports is a one-line change in the composition
-root; producers and consumers never mention the transport.
-
-The bus carries `string` payloads only. A producer says how to
-serialize its values; each consumer says how to deserialize what it
-reads. Two consumers on the same URI may decode the same bytes into
-different OCaml types — the wire format is the contract, the types are
-local to each side. This is what lets two bounded contexts talk without
-sharing a module: each keeps its own copy of the contract.
-
-Two libraries:
-
-- `ascetic_ddd.bus` — `Ascetic_bus.Bus`, the dispatcher and the
-  `Adapter` signature. Depends on nothing but the standard library.
-- `ascetic_ddd.bus.in_memory` — `Ascetic_bus_in_memory.In_memory`, a
-  process-local adapter built on `Eio.Stream`.
-
----
-
-## Quick start
+Scheme-dispatched message bus: typed producers and consumers over opaque
+wire messages, with an in-memory adapter. A port of the Rust reference
+implementation of these building blocks, which itself began as a port of
+this library's first version.
 
 ```ocaml
-module Bus = Ascetic_bus.Bus
-module In_memory = Ascetic_bus_in_memory.In_memory
+open Ascetic_bus
+module Broker = Ascetic_bus_in_memory.In_memory_broker
 
-let () =
-  Eio_main.run @@ fun _env ->
-  Eio.Switch.run @@ fun sw ->
+let ( let* ) = Result.bind
 
-  (* 1. Composition root: bind the "in-memory" scheme to one broker. *)
-  let bus = Bus.create () in
-  Bus.register bus ~scheme:"in-memory" (In_memory.adapter (In_memory.create ~sw));
-
-  (* 2. Consumer side: declare how the wire is read. *)
-  let consumer =
-    Bus.consumer bus ~uri:"in-memory://orders.placed" ~group:"billing"
-      ~deserialize:Yojson.Safe.from_string
-  in
-  let subscription =
-    Bus.subscribe consumer (fun json -> print_endline (Yojson.Safe.to_string json))
-  in
-
-  (* 3. Producer side: declare how the wire is written. *)
-  let producer =
-    Bus.producer bus ~uri:"in-memory://orders.placed" ~serialize:Yojson.Safe.to_string
-  in
-  Bus.publish producer (`Assoc [ ("order_id", `String "o-1") ]);
-
-  (* Delivery runs on the broker's dispatch fiber; yield to let it run. *)
-  Eio.Fiber.yield ();
-  Bus.unsubscribe subscription
+let wire ~sw =
+  let* bus = Bus.register Bus.empty ~scheme:"in-memory" (Broker.adapter (Broker.create ~sw ())) in
+  let* orders = Bus.consumer bus ~uri:"in-memory://orders" ~group:"billing" ~decode:decode_order in
+  let* _subscription = Consumer.subscribe orders (fun order -> bill order) in
+  let* producer = Bus.producer bus ~uri:"in-memory://orders" ~encode:encode_order in
+  Producer.publish producer order
 ```
 
-```lisp
-; dune
-(libraries ascetic_ddd.bus ascetic_ddd.bus.in_memory eio eio_main yojson)
-```
+## Design
 
----
+The bus is a registry of transports keyed by URI scheme; a call site names
+the scheme, never the transport, so replacing a broker with the in-memory one
+is one `register` line at the composition root. The registry is a value:
+`register` gives a new bus, and there is no global one. The bus carries
+opaque wire messages: each producer encodes with a function of its own and
+each consumer decodes with one of its own, so two consumers of one topic may
+read the same bytes as different types. The wire format is the contract; the
+types are local to each side.
 
-## Concepts
+* **A message has a payload, a key and headers.** `Message.t` carries bytes,
+  an optional key and flat headers, name to bytes, as a broker's are. A
+  transport that partitions needs the key to keep an aggregate's messages in
+  order, and the key belongs to the message, not to the URI, because a
+  producer serves many aggregates. A URI may still carry one,
+  `scheme://channel/key`: a producer built for it stamps the key on messages
+  that have none.
+* **Push, not pull.** A consumer runs a handler for every message. A handler
+  is a plain function on an Eio fiber, `'a -> (unit, Failure.t) result`.
+* **Errors are values.** Every operation returns a `Bus_error.t`. A handler's
+  error means the message was not handled: a transport that can, redelivers
+  it. `Failure.Transient` is the ordinary failure; `Failure.Permanent` is the
+  one verdict the bus carries, a failure no retry will mend, from whoever can
+  tell, a stage or a handler, to a transport that can act on it: the inbox
+  parks such a message at once.
+* **A transport is a record of functions**, `Adapter.t`: a consumer of wire
+  messages and a producer of them. The registry holds transports of any kind
+  side by side.
 
-### URI = scheme + topic
+A subscription is cancelled explicitly, never by discarding its handle: the
+composition root discards most handles. A message a consumer cannot decode
+is reported and skipped: a poison message must not stop the rest.
 
-A URI is `scheme://rest`. The scheme selects the adapter; the adapter
-decides what the rest means. The in-memory adapter keys topics by the
-full URI string. A network adapter would map it onto its own notion of
-a topic or channel.
+A message may go through *stages* between the typed layer and the
+transport: `Producer.through producer stage` sends every message out through
+the stages in order, after encoding; `Consumer.through consumer stage`
+brings every message back through them in reverse, before decoding. Sealing
+goes here (ADR-0001), so that nothing between the two ends sees a payload in
+the clear; the bus does not know what a stage does. A stage that fails on
+the way out fails the publish; one that fails on the way in fails the
+handling, so the message is kept and tried again, never skipped.
 
-`Bus.consumer` and `Bus.producer` resolve the scheme eagerly. A URI
-whose scheme has no adapter — or that has no `scheme:` prefix at all —
-raises `Bus.Unknown_scheme` at construction time, so a wiring mistake
-fails at startup rather than at the first publish. Registering two
-adapters for one scheme on the same bus raises `Bus.Already_registered`.
+A producer or consumer that is transactional by nature, the outbox, the
+inbox, is obtained from its adapter rather than from the registry, and names
+the transaction at the call: `Transactional.Producer.publish producer
+session value` publishes inside the caller's transaction,
+`Transactional.Consumer.subscribe consumer (fun session value -> ...)` runs
+the handler inside the transaction that acknowledges the message. The bus
+never sees a session; it passes one through (ADR-0011).
 
-### Consumer groups
+`Bridge` is a Messaging Bridge: what arrives on one channel is published on
+another, bytes, key and headers untouched, to one fixed URI or to the URI a
+header names. It acknowledges a message only after the target accepted it.
+An outbox dispatcher is a bridge from the outbox channel to the destination
+each message names; an inbox intake is a bridge from a broker channel to the
+inbox channel.
 
-Groups have the semantics of Kafka consumer groups: every group
-registered on a URI sees every message (fan-out across groups), and a
-message is handled once within a group.
+## Adapters
 
-The in-memory adapter enforces a stronger invariant on top: at most
-one consumer per `(uri, group)` per broker. A second registration
-raises `In_memory.Already_registered_in_group`. In a single process
-each logical role is one instance, so a duplicate is a configuration
-bug and should fail fast rather than silently split the stream.
+`In_memory_broker` (`ascetic_ddd.bus.in_memory`) is the monolithic
+transport: topics in a process-local registry, a delivery fiber per topic on
+the switch the broker was given, one consumer per `(uri, group)`, ordered
+delivery, a bounded queue whose fullness makes producers wait, a handler
+that fails or raises loses its message and not the topic.
 
-### Wire contract
-
-The bus never inspects payloads. Producers serialize to `string`,
-consumers deserialize from `string`, and nothing in between knows the
-OCaml types on either side. Consequences:
-
-- there is no translation layer between contexts — each side owns its
-  own (de)serializer;
-- consumers in different groups on the same URI may use different
-  deserializers, and a payload one of them cannot decode is dropped
-  for that group only.
-
-### Per-bus, per-broker state
-
-`Bus.create` and `In_memory.create` return isolated instances. There
-is no global registry: two buses do not share adapters, two brokers do
-not share topics, even when both are bound to the same scheme. Tests
-can therefore run in parallel, each with its own bus and broker.
-
----
-
-## In-memory adapter semantics
-
-- **One dispatch fiber per topic**, forked as a daemon on the switch
-  passed to `In_memory.create`. Every consumer on the broker tears down
-  when that switch is released.
-- **FIFO per topic.** Messages reach every group in publish order.
-- **Synchronous hand-off.** The dispatch fiber invokes each group's
-  callback in turn and does not take the next message until all of
-  them return. A slow callback delays the whole topic; fork a fiber
-  inside the callback if the work is heavy.
-- **Bounded queue.** A topic buffers 1024 messages. `Bus.publish`
-  suspends the publishing fiber while the buffer is full.
-- **Subscribe before you publish.** A message that arrives while a
-  group has no active callback is dropped for that group; nothing is
-  replayed on `subscribe`.
-- **Failures are contained, not retried.** A deserialization exception
-  drops the message for that group and logs a warning through `Logs`.
-  A callback exception is logged the same way and dispatch continues
-  with the next group and the next message. The adapter is
-  at-most-once and holds nothing across restarts. For delivery
-  guarantees, feed it from the outbox dispatcher and consume through
-  the inbox.
-- **`unsubscribe` detaches the callback but keeps the group.** The
-  same consumer handle can `subscribe` again; a second `unsubscribe`
-  on the same handle is a no-op.
-
----
-
-## Writing an adapter
-
-An adapter is a first-class module of signature `Bus.Adapter`:
+`Kafka_broker` (`ascetic_ddd.bus.kafka`) is the same surface over Kafka, on
+[`kafka-eio`](https://github.com/loganbnielsen/kafka-eio), an Eio client
+built on librdkafka. A URI `kafka://orders` names the topic `orders`; a
+consumer group of the same name shares the topic's partitions; a message's
+key is its Kafka key, and messages with one key stay in order. Delivery is
+at least once: the offset of a message is committed after its handler
+returns. A handler that fails is retried until it succeeds, so the partition
+waits and keeps its order; a handler that raises, a message that cannot be
+decoded, and a failure that is `Failure.Permanent` are reported and skipped,
+because a poison message must not stop the partition. TLS, SASL and tuning
+come from the `security` and `properties` the broker is built with.
 
 ```ocaml
-module type Adapter = sig
-  type 'a adapter_consumer
-  type 'a adapter_producer
-  type adapter_subscription
-
-  val consumer :
-    uri:string -> group:string -> deserialize:(string -> 'a) -> 'a adapter_consumer
-
-  val producer : uri:string -> serialize:('a -> string) -> 'a adapter_producer
-  val publish : 'a adapter_producer -> 'a -> unit
-  val subscribe : 'a adapter_consumer -> ('a -> unit) -> adapter_subscription
-  val unsubscribe : adapter_subscription -> unit
-end
+let broker = Kafka_broker.create ~sw ~clock ~brokers:[ "localhost:9092" ] () in
+let* bus = Bus.register Bus.empty ~scheme:"kafka" (Kafka_broker.adapter broker)
 ```
 
-Connection state lives in the closure that builds the module, the way
-`In_memory.adapter broker` captures its broker. Register it under the
-scheme it serves:
+The adapter is optional: it is built only where `kafka-eio` is installed, so
+the rest of the library does not depend on it. `kafka-eio` is not on opam
+yet and needs the system's librdkafka:
 
-```ocaml
-Bus.register bus ~scheme:"kafka" (Kafka_adapter.adapter client)
+```bash
+sudo apt-get install -y librdkafka-dev
+opam pin add kafka-eio git+https://github.com/loganbnielsen/kafka-eio#784bf37c32e141406cf6a1837150d38d2cb2919e
 ```
 
-Nothing on the producer or consumer side changes when the scheme in
-their URIs changes.
+The commit above is the one the adapter was written and tested against; the
+client is young and its interface has changed between releases, so pin it.
+A consumer and the broker's producer are not domain-safe: share them between
+fibers of one Eio domain only.
 
----
+## Logging
+
+What the bus cannot return it reports through a `Logs` source of its own,
+`Ascetic_bus.Log.src`, named `ascetic_ddd.bus`: a message that could not be
+decoded, a handler that failed on a transport with nobody to tell. An
+application routes or silences it by that name.
 
 ## Testing
 
-Each test creates its own bus and broker under its own
-`Eio.Switch.run`. After `Bus.publish`, one `Eio.Fiber.yield ()` is
-enough to let the dispatch fiber deliver to every subscribed group.
-See [`test/bus/`](../../test/bus/) for the reference suites.
+```bash
+dune test test/bus
+
+# the Kafka tests need a live broker, and are skipped without one
+docker compose up -d redpanda
+TEST_KAFKA_BROKERS=localhost:59092 dune test test/bus/kafka --force
+```

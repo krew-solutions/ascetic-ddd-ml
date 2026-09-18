@@ -1,0 +1,17 @@
+{"event":"fetched","id":null,"observer":"inbox","slot":null,"slots":1,"snapshot":{"xip":[],"xmax":820,"xmin":820}}
+{"event":"dispatched","observer":"inbox","outcome":"nothing","slot":null}
+{"deps":[],"event":"received","id":"t1/orders.Order/7/4","message_id":"00000000-0000-4000-8000-000000000004","observer":"inbox","received_position":1,"slot":0,"xid":820}
+{"event":"fetched","id":"t1/orders.Order/7/4","observer":"inbox","slot":0,"slots":1,"snapshot":{"xip":[],"xmax":821,"xmin":821}}
+{"event":"handled","id":"t1/orders.Order/7/4","observer":"inbox","ok":false,"slot":0}
+{"attempts":1,"error":"this message will never open","event":"failed","id":"t1/orders.Order/7/4","observer":"inbox","parked":true,"permanent":true,"retry_after_ms":0,"slot":0}
+{"event":"dispatched","observer":"inbox","outcome":"failed","slot":0}
+{"event":"fetched","id":null,"observer":"inbox","slot":null,"slots":1,"snapshot":{"xip":[],"xmax":823,"xmin":823}}
+{"event":"dispatched","observer":"inbox","outcome":"nothing","slot":null}
+{"event":"fetched","id":null,"observer":"inbox","slot":null,"slots":1,"snapshot":{"xip":[],"xmax":823,"xmin":823}}
+{"event":"dispatched","observer":"inbox","outcome":"nothing","slot":null}
+{"event":"fetched","id":null,"observer":"inbox","slot":null,"slots":1,"snapshot":{"xip":[],"xmax":823,"xmin":823}}
+{"event":"dispatched","observer":"inbox","outcome":"nothing","slot":null}
+{"event":"fetched","id":null,"observer":"inbox","slot":null,"slots":1,"snapshot":{"xip":[],"xmax":823,"xmin":823}}
+{"event":"dispatched","observer":"inbox","outcome":"nothing","slot":null}
+{"event":"fetched","id":null,"observer":"inbox","slot":null,"slots":1,"snapshot":{"xip":[],"xmax":823,"xmin":823}}
+{"event":"dispatched","observer":"inbox","outcome":"nothing","slot":null}

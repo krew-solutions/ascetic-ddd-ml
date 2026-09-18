@@ -1,0 +1,7 @@
+; Built only where kafka-eio is installed: it is not on opam yet, and it
+; links against librdkafka.
+(library
+ (name ascetic_bus_kafka)
+ (public_name ascetic_ddd.bus.kafka)
+ (optional)
+ (libraries ascetic_ddd.bus kafka-eio eio))

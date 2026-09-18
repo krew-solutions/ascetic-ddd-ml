@@ -1,0 +1,7 @@
+; Built and run only where kafka-eio is installed; skipped at run time unless
+; TEST_KAFKA_BROKERS names a live broker.
+(test
+ (name test_kafka)
+ (enabled_if %{lib-available:kafka-eio})
+ (build_if %{lib-available:kafka-eio})
+ (libraries ascetic_ddd.bus ascetic_ddd.bus.kafka kafka-eio alcotest eio eio_main unix))

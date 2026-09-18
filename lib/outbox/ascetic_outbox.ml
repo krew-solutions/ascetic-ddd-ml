@@ -18,3 +18,5 @@ module Outbox_observer = Outbox_observer
 module Loops = Loops
 module Selection = Selection
 module Pg_outbox = Pg_outbox
+module Outbox_channel = Outbox_channel
+module Log = Log

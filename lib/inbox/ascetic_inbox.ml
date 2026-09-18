@@ -24,3 +24,5 @@ module Retries = Retries
 module Loops = Loops
 module Inbox_observer = Inbox_observer
 module Pg_inbox = Pg_inbox
+module Inbox_channel = Inbox_channel
+module Log = Log

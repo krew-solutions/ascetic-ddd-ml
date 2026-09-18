@@ -64,6 +64,7 @@
   (qcheck
    (and
     (>= 0.21)
-    :with-test))))
+    :with-test)))
+ (depopts kafka-eio))
 
 (using menhir 3.0)

@@ -1,58 +1,27 @@
-type subscription = { cancel : unit -> unit }
-type 'a consumer = { subscribe : ('a -> unit) -> subscription }
-type 'a producer = { publish : 'a -> unit }
+module Schemes = Map.Make (String)
 
-module type Adapter = sig
-  type 'a adapter_consumer
-  type 'a adapter_producer
-  type adapter_subscription
+type t = Adapter.t Schemes.t
 
-  val consumer :
-    uri:string -> group:string -> deserialize:(string -> 'a) -> 'a adapter_consumer
-
-  val producer : uri:string -> serialize:('a -> string) -> 'a adapter_producer
-  val publish : 'a adapter_producer -> 'a -> unit
-  val subscribe : 'a adapter_consumer -> ('a -> unit) -> adapter_subscription
-  val unsubscribe : adapter_subscription -> unit
-end
-
-type bus = { adapters : (string, (module Adapter)) Hashtbl.t }
-
-exception Already_registered of string
-exception Unknown_scheme of string
-
-let create () = { adapters = Hashtbl.create 4 }
+let empty = Schemes.empty
 
 let register bus ~scheme adapter =
-  if Hashtbl.mem bus.adapters scheme then raise (Already_registered scheme);
-  Hashtbl.replace bus.adapters scheme adapter
+  if Schemes.mem scheme bus then Error (Bus_error.Already_registered scheme)
+  else Ok (Schemes.add scheme adapter bus)
 
-let scheme_of_uri uri =
-  match String.index_opt uri ':' with
-  | Some i -> String.sub uri 0 i
-  | None -> raise (Unknown_scheme uri)
+let adapter bus uri =
+  Result.bind (Bus_uri.scheme uri) (fun scheme ->
+      match Schemes.find_opt scheme bus with
+      | Some adapter -> Ok adapter
+      | None -> Error (Bus_error.Unknown_scheme scheme))
 
-let consumer (type a) bus ~uri ~group ~(deserialize : string -> a) : a consumer =
-  let scheme = scheme_of_uri uri in
-  match Hashtbl.find_opt bus.adapters scheme with
-  | None -> raise (Unknown_scheme scheme)
-  | Some (module A : Adapter) ->
-      let raw = A.consumer ~uri ~group ~deserialize in
-      {
-        subscribe =
-          (fun cb ->
-            let raw_sub = A.subscribe raw cb in
-            { cancel = (fun () -> A.unsubscribe raw_sub) });
-      }
+let ( let* ) = Result.bind
 
-let producer (type a) bus ~uri ~(serialize : a -> string) : a producer =
-  let scheme = scheme_of_uri uri in
-  match Hashtbl.find_opt bus.adapters scheme with
-  | None -> raise (Unknown_scheme scheme)
-  | Some (module A : Adapter) ->
-      let raw = A.producer ~uri ~serialize in
-      { publish = (fun v -> A.publish raw v) }
+let consumer bus ~uri ~group ~decode =
+  let* (adapter : Adapter.t) = adapter bus uri in
+  let* wire = adapter.consumer ~uri ~group in
+  Ok (Consumer.make ~uri ~group wire ~decode)
 
-let publish p v = p.publish v
-let subscribe c cb = c.subscribe cb
-let unsubscribe s = s.cancel ()
+let producer bus ~uri ~encode =
+  let* (adapter : Adapter.t) = adapter bus uri in
+  let* wire = adapter.producer ~uri in
+  Ok (Producer.make wire ~encode)

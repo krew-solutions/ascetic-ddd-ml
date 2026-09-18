@@ -4,8 +4,10 @@
  (libraries
   ascetic_ddd.session
   ascetic_ddd.session.caqti
+  ascetic_ddd.bus
   caqti
   caqti-eio
   eio
+  logs
   yojson
   ptime))

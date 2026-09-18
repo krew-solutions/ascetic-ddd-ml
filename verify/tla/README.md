@@ -254,7 +254,7 @@ watching an outbox that feeds an inbox keeps the order across both.
 ```bash
 TEST_DATABASE_URL=postgresql://test:test@localhost:55432/test \
 ASCETIC_DDD_TRACE_DIR=$PWD/verify/tla/traces \
-    dune test test/outbox test/inbox test/trace --force
+    dune test test/outbox test/inbox --force
 ./verify/tla/check.sh
 ```
 
@@ -325,8 +325,9 @@ acknowledgement those are not steps of the bridge.
 
 A fetch that took no slot names the group only, and the check then speaks for
 every slot: none may have had visible work. `traces/` holds one recorded run
-per test: the outbox and inbox tests, and the one run of an outbox feeding
-an inbox, `test/trace`. Two outbox tests record nothing, because what they
+per test: the outbox and inbox tests, the inbox's bridge tests from an
+in-memory broker, and the one run of an outbox feeding an inbox. Two outbox
+tests record nothing, because what they
 exercise the model does not describe: moving the position by hand
 (`set_position`), and the URI filter of a selection. `traces/forged/` holds
 four runs edited by hand: an outbox dispatcher without the visibility rule,

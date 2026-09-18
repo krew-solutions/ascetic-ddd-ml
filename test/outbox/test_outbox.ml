@@ -654,6 +654,63 @@ let test_the_observer_sees_the_protocol env uri () =
     [ of_receipt (List.nth receipts 1); of_receipt (List.nth receipts 2) ]
     (List.rev !(r.acked))
 
+(* Whether [sub] occurs in [text]. *)
+let contains ~sub text =
+  let n = String.length sub and m = String.length text in
+  let rec at i = i + n <= m && (String.sub text i n = sub || at (i + 1)) in
+  at 0
+
+(* What the library logged while the body ran: source, level and text. *)
+let logged body =
+  let seen = ref [] in
+  let report src level ~over k msgf =
+    msgf (fun ?header:_ ?tags:_ fmt ->
+        Format.kasprintf
+          (fun text ->
+            seen := (Logs.Src.name src, level, text) :: !seen;
+            over ();
+            k ())
+          fmt)
+  in
+  Logs.set_reporter { Logs.report };
+  Logs.set_level (Some Logs.Warning);
+  Fun.protect
+    ~finally:(fun () -> Logs.set_reporter Logs.nop_reporter)
+    (fun () ->
+      body ();
+      List.rev !seen)
+
+let said logs ~src ~level ~text =
+  List.exists (fun (s, l, t) -> s = src && l = level && contains ~sub:text t) logs
+
+(* A loop that waits after a failure says so on the outbox's own source, so
+   that a broker away is not silent when no observer is attached. *)
+let test_a_loop_that_waits_after_a_failure_says_so env uri () =
+  with_fixture ~name:"logged" ~trace:false env uri @@ fun f ->
+  publish f [ message "kafka://orders" 1 ];
+  let calls = ref 0 in
+  let all_done, resolve_done = Eio.Promise.create () in
+  let subscriber _ =
+    incr calls;
+    if !calls = 1 then Error "the broker is away"
+    else begin
+      ignore (Eio.Promise.try_resolve resolve_done ());
+      Ok ()
+    end
+  in
+  let loops = { Loops.concurrency = 1; poll_interval = 0.02; max_pause = 0.05 } in
+  let logs =
+    logged (fun () ->
+        unwrap "run"
+          (within f 10.0 (fun () ->
+               Outbox.run f.outbox ~clock:f.clock ~loops ~shutdown:all_done broker
+                 subscriber)))
+  in
+  Alcotest.(check bool)
+    "the wait is a warning" true
+    (said logs ~src:"ascetic_ddd.outbox" ~level:Logs.Warning
+       ~text:"a loop failed, waiting")
+
 let cases env uri =
   let case name test = Alcotest.test_case name `Quick (test env uri) in
   [
@@ -683,6 +740,8 @@ let cases env uri =
     case "run outlives a failing subscriber" test_run_outlives_a_failing_subscriber;
     case "two setups at once agree" test_two_setups_at_once_agree;
     case "the observer sees the protocol" test_the_observer_sees_the_protocol;
+    case "a loop that waits after a failure says so"
+      test_a_loop_that_waits_after_a_failure_says_so;
   ]
 
 let () =

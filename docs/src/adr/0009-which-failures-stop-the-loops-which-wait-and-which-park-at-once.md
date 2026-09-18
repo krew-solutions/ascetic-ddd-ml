@@ -81,9 +81,13 @@ classification is available where the backend is.
   failure parks the message at once"; in the outbox, "run outlives a failing
   subscriber"; the SQLSTATE table has unit tests in `test/session`.
 - Bounds of a wrong class: an unknown code is a defect and stops the loops,
-  which is loud; an error of the moment that never ends is a pause per
-  failure up to `max_pause`, and every `dispatched` carries the error to the
-  observer, which is where a deployment logs it.
+  which is loud; an error of the moment that never ends is a warning per
+  pause up to `max_pause`, on the library's own `Logs` source, and every
+  `dispatched` carries the error to the observer. The log is the observer
+  everyone has: a loop that waits, a failed attempt and above all a parked
+  message, which needs a person, must not be silent when no observer of ours
+  is attached; the sources are named `ascetic_ddd.outbox` and
+  `ascetic_ddd.inbox`, so an application routes or silences them.
 - `Loops.t` has `max_pause`; the inbox's `Inbox_error.t` has no subscriber
   case, and `Malformed` names what the inbox reads back and cannot use, a
   transaction id, a snapshot, a table cut otherwise.

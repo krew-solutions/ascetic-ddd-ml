@@ -16,3 +16,21 @@ services:
     # Ephemeral data — wipe on container removal. Suitable for tests.
     tmpfs:
       - /var/lib/postgresql/data
+
+  # A Kafka-API broker for the tests of ascetic_ddd.bus.kafka:
+  #   export TEST_KAFKA_BROKERS=localhost:59092
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:latest
+    command:
+      - redpanda
+      - start
+      - --mode=dev-container
+      - --smp=1
+      - --memory=512M
+      - --overprovisioned
+      - --kafka-addr=PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr=PLAINTEXT://localhost:59092
+      - --set
+      - redpanda.auto_create_topics_enabled=true
+    ports:
+      - "59092:9092"

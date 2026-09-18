@@ -475,7 +475,13 @@ let run t ~clock ?(loops = Loops.default) ~shutdown selection subscriber =
       | Error error
         when match error with Subscriber _ -> true | _ -> Error.is_transient error ->
           let failures = failures + 1 in
-          pause (Loops.pause_after loops failures);
+          let wait = Loops.pause_after loops failures in
+          Log.warn (fun m ->
+              m "outbox: a loop failed, waiting %gs: %a" wait
+                (Error.pp (fun ppf _ ->
+                     Format.pp_print_string ppf "it declined the batch"))
+                error);
+          pause wait;
           loop failures
       | Error error ->
           if Option.is_none !defect then defect := Some error;

@@ -723,6 +723,28 @@ let dispatch t (subscriber : subscriber) =
                               Result.map_error in_slot
                                 (record_failure t tx message failure ~retry_after)
                             in
+                            (* The log is the observer everyone has: a parked
+                               message must not be silent when no observer of
+                               ours is attached. An attempt is expected and
+                               repeats; parking needs a person. *)
+                            let identity =
+                              Causal_dependency.to_string (Inbox_message.identity message)
+                            in
+                            if Failure.is_permanent failure then
+                              Log.err (fun m ->
+                                  m
+                                    "inbox: %s parked, the subscriber's verdict is \
+                                     permanent: %s"
+                                    identity (Failure.message failure))
+                            else if parked then
+                              Log.err (fun m ->
+                                  m "inbox: %s parked after %d failed attempts: %s"
+                                    identity attempts (Failure.message failure))
+                            else
+                              Log.warn (fun m ->
+                                  m "inbox: attempt %d on %s failed, next in %gs: %s"
+                                    attempts identity retry_after
+                                    (Failure.message failure));
                             observer.on_failed
                               { slot; message; failure; attempts; parked; retry_after };
                             Ok (Some slot, Outcome.Failed { attempts; parked }))))))
@@ -754,7 +776,11 @@ let run t ~clock ?(loops = Loops.default) ~shutdown subscriber =
           loop 0
       | Error error when Error.is_transient error ->
           let passing = passing + 1 in
-          pause (Loops.pause_after loops passing);
+          let wait = Loops.pause_after loops passing in
+          Log.warn (fun m ->
+              m "inbox: a loop met an error of the moment, waiting %gs: %a" wait Error.pp
+                error);
+          pause wait;
           loop passing
       | Error error ->
           if Option.is_none !defect then defect := Some error;

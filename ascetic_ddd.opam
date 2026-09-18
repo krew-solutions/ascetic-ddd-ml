@@ -33,6 +33,7 @@ depends: [
   "qcheck" {>= "0.21" & with-test}
   "odoc" {with-doc}
 ]
+depopts: ["kafka-eio"]
 build: [
   ["dune" "subst"] {dev}
   [

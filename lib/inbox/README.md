@@ -42,6 +42,43 @@ subscriber is `Caqti_session.t -> Inbox_message.t -> (unit, Failure.t) result`:
 it writes through the session it is given, and says, when it fails, whether
 trying again can help.
 
+## As a channel of the bus
+
+The inbox is also an adapter of `ascetic_ddd.bus` (ADR-0011),
+`Inbox_channel`. A bridge from a broker channel to the inbox channel is the
+intake: every wire message is stored under the identity its headers name,
+and the same identity again is ignored. The consumer is transactional and
+comes from the inbox itself: its handler runs inside the transaction that
+marks the message processed, and is given that transaction.
+
+```ocaml
+let* bus = Bus.register Bus.empty ~scheme:"kafka" kafka in
+let* bus = Bus.register bus ~scheme:Inbox_channel.scheme (Inbox_channel.adapter inbox) in
+
+(* the intake *)
+let* intake = Bridge.run (Bridge.create bus) ~from:"kafka://orders" ~group:"orders-intake" (Bridge.Fixed "inbox://orders") in
+
+(* the processing; [tx] is the transaction the mark commits in *)
+let orders = Inbox_channel.consumer ~sw ~clock inbox ~decode:decode_order_placed in
+let* processing = Transactional.Consumer.subscribe orders (fun tx order -> place tx order)
+```
+
+Headers become columns: `tenant_id`, `stream_type`, `stream_id`,
+`stream_position`; `destination`, the channel the message was sent to as
+the outbox stamps it, becomes `uri`, and without one the inbox channel the
+message was published to, key included, does. Every other header is a
+field of `metadata`, structured again when its text is a JSON array or
+object. Published from an outbox to `inbox://orders/order-7`, a message
+crosses the outbox dispatcher's bridge into the inbox without a broker:
+after-commit delivery and processing in the marking transaction, in one
+database.
+
+The processing loop is a daemon fiber on the switch the consumer was given;
+cancel the subscription to stop it. A handler's error is a failure of the
+moment, retried as the inbox's retries say, unless it is the one verdict the
+bus carries, `Ascetic_bus.Failure.Permanent`, from a handler or a stage that
+can tell: the inbox's consumer reads it and parks the message at once.
+
 ## Dependencies
 
 A message may name causal dependencies, messages that must be processed
@@ -179,13 +216,15 @@ exactly that, through the recorder of `ascetic_ddd.trace`: with
 several dispatchers at once records nothing, the order its events are logged
 in is not the order of their commits, and asserts the table's state instead.
 
-## What is not here
+## Logging
 
-The inbox as a channel of the message bus, a bridge from a broker channel
-into the inbox and a transactional consumer out of it, is not ported yet:
-`ascetic_ddd.bus` carries typed values, not wire messages with headers.
-Until then a bus subscriber calls `publish` itself, and `run` is the
-processing loop.
+The log is the observer everyone has. What must not be silent when no
+observer is attached goes to a `Logs` source of the inbox's own,
+`Ascetic_inbox.Log.src`, named `ascetic_ddd.inbox`: a failed attempt, as a
+warning, since it is expected and repeats; a message parked, as an error,
+since parking needs a person; a loop that waits after an error of the
+moment; a processing loop on the bus that starts again after a defect.
+Everything a deployment measures stays with the observer.
 
 ## Deviations from the reference implementation
 
@@ -196,7 +235,6 @@ processing loop.
   seconds as `float`; the shutdown is an `Eio.Promise.t`.
 * `Inbox_error.t` has no subscriber case: a failing subscriber is an
   `Outcome.t`, never an error.
-* The bus channel is not ported yet, see above.
 
 ## Testing
 
