@@ -138,7 +138,6 @@ let consumer ~sw ~clock ?(loops = Loops.default) inbox ~decode =
     {
       subscribe =
         (fun handler ->
-          let stop, resolve_stop = Eio.Promise.create () in
           (* A handler's error is a failure of the moment, unless the bus
              carries the one verdict it knows: permanent, from a stage or a
              handler that can tell, and the message is parked at once. *)
@@ -150,7 +149,10 @@ let consumer ~sw ~clock ?(loops = Loops.default) inbox ~decode =
             | Error (Ascetic_bus.Failure.Transient reason) ->
                 Error (Failure.Transient reason)
           in
-          let rec processing () =
+          (* Told to stop, [run] lets its loops finish the message they have
+             in hand, mark it, commit and give the connection back, and
+             returns; cancelling the subscription waits for that. *)
+          let rec processing ~stop =
             match Pg_inbox.run inbox ~clock ~loops ~shutdown:stop subscriber with
             | Ok () -> ()
             | Error error ->
@@ -160,13 +162,8 @@ let consumer ~sw ~clock ?(loops = Loops.default) inbox ~decode =
                 Eio.Fiber.first
                   (fun () -> Eio.Time.Mono.sleep clock loops.poll_interval)
                   (fun () -> Eio.Promise.await stop);
-                if not (Eio.Promise.is_resolved stop) then processing ()
+                if not (Eio.Promise.is_resolved stop) then processing ~stop
           in
-          Eio.Fiber.fork_daemon ~sw (fun () ->
-              processing ();
-              `Stop_daemon);
-          Ok
-            (Ascetic_bus.Subscription.make (fun () ->
-                 ignore (Eio.Promise.try_resolve resolve_stop ()))));
+          Ok (Ascetic_bus.Handling.loop ~sw processing));
     }
     ~decode

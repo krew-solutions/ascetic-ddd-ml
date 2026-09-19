@@ -19,6 +19,7 @@ module Failure = Failure
 module Bus_error = Bus_error
 module Bus_uri = Bus_uri
 module Subscription = Subscription
+module Handling = Handling
 module Stage = Stage
 module Adapter = Adapter
 module Consumer = Consumer

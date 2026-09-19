@@ -361,6 +361,51 @@ let test_a_handler_s_permanent_verdict_parks_the_message_at_once env uri () =
   Subscription.cancel intake;
   Subscription.cancel processing
 
+(* Cancelling the processing waits for the message it has in hand: when it
+   returns, the handler has returned, its write and the mark are committed,
+   read here at once, with no polling. *)
+let test_cancelling_waits_for_the_message_in_hand_to_be_marked env uri () =
+  with_fixture ~name:"graceful" ~stem:"inbox-bridge-graceful" env uri @@ fun f ->
+  let intake, publish = with_intake f in
+  let handling, set_handling = Eio.Promise.create () in
+  let may_return, let_return = Eio.Promise.create () in
+  let orders =
+    Channel.consumer ~sw:f.sw ~clock:f.clock ~loops f.inbox ~decode:payload_of
+  in
+  let processing =
+    bus "subscribe"
+      (Transactional.Consumer.subscribe orders (fun tx order ->
+           match
+             exec tx
+               (Printf.sprintf "INSERT INTO %s_handled (payload) VALUES ('%s')" f.table
+                  order)
+           with
+           | Error reason -> Error (Ascetic_bus.Failure.transient reason)
+           | Ok () ->
+               Eio.Promise.resolve set_handling ();
+               Eio.Promise.await may_return;
+               Ok ()))
+  in
+  publish (order "placed" 1 "00000000-0000-4000-8000-000000000021");
+  let in_time what wait =
+    Eio.Time.Timeout.run_exn (Eio.Time.Timeout.seconds f.clock 20.0) (fun () ->
+        try wait () with Eio.Time.Timeout -> Alcotest.failf "%s: not in time" what)
+  in
+  in_time "the handler is called" (fun () -> Eio.Promise.await handling);
+  let cancelled =
+    Eio.Fiber.fork_promise ~sw:f.sw (fun () -> Subscription.cancel processing)
+  in
+  Eio.Time.Mono.sleep f.clock 0.2;
+  Alcotest.(check bool)
+    "cancel waits while the handler runs" false
+    (Eio.Promise.is_resolved cancelled);
+  Alcotest.(check int) "nothing is marked yet" 0 (processed f);
+  Eio.Promise.resolve let_return ();
+  in_time "cancel returns" (fun () -> Eio.Promise.await_exn cancelled);
+  Alcotest.(check int) "the message is marked" 1 (processed f);
+  Alcotest.(check int) "the handler's write committed with the mark" 1 (handled f);
+  Subscription.cancel intake
+
 let () =
   match Sys.getenv_opt "TEST_DATABASE_URL" with
   | None ->
@@ -382,5 +427,7 @@ let () =
                 test_a_failing_handler_is_retried_and_its_writes_are_rolled_back;
               case "a handler's permanent verdict parks the message at once"
                 test_a_handler_s_permanent_verdict_parks_the_message_at_once;
+              case "cancelling waits for the message in hand to be marked"
+                test_cancelling_waits_for_the_message_in_hand_to_be_marked;
             ] );
         ]

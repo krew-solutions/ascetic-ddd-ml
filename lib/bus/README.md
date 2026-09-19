@@ -50,7 +50,16 @@ types are local to each side.
   side by side.
 
 A subscription is cancelled explicitly, never by discarding its handle: the
-composition root discards most handles. A message a consumer cannot decode
+composition root discards most handles. A subscription cancelled is a
+handler that is not running and will not be run (ADR-0016):
+`Subscription.cancel` detaches the handler and waits for the call in flight,
+and on a channel over a database for the loop to finish the batch it has in
+hand, committed and its connection given back. Then what the handler uses
+may be taken down: that is what stopping in good order needs. A handler may
+cancel its own subscription; it does not wait for itself, and the message in
+hand is its last. A transport gets this from `Handling`, which counts a
+subscription's calls in flight: every adapter here makes its calls through
+it. A message a consumer cannot decode
 is reported and skipped: a poison message must not stop the rest.
 
 A message may go through *stages* between the typed layer and the
@@ -83,7 +92,9 @@ inbox channel.
 transport: topics in a process-local registry, a delivery fiber per topic on
 the switch the broker was given, one consumer per `(uri, group)`, ordered
 delivery, a bounded queue whose fullness makes producers wait, a handler
-that fails or raises loses its message and not the topic.
+that fails or raises loses its message and not the topic. Cancelling a
+subscription waits for its handler if it is running; the topic goes on for
+the other groups.
 
 `Kafka_broker` (`ascetic_ddd.bus.kafka`) is the same surface over Kafka, on
 [`kafka-eio`](https://github.com/loganbnielsen/kafka-eio), an Eio client
@@ -94,7 +105,10 @@ at least once: the offset of a message is committed after its handler
 returns. A handler that fails is retried until it succeeds, so the partition
 waits and keeps its order; a handler that raises, a message that cannot be
 decoded, and a failure that is `Failure.Permanent` are reported and skipped,
-because a poison message must not stop the partition. TLS, SASL and tuning
+because a poison message must not stop the partition. Cancelling a
+subscription stops its loop between messages, never inside the handler, and
+waits for it: the message in hand is handled and its offset committed; one
+whose handler keeps failing is left uncommitted, to come again. TLS, SASL and tuning
 come from the `security` and `properties` the broker is built with.
 
 ```ocaml

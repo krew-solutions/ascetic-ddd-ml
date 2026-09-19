@@ -144,6 +144,43 @@ let test_a_cancelled_subscription_receives_nothing_more env brokers () =
   Alcotest.(check (list string)) "nothing after" [ "before" ] (seen ())
 
 (* A handler that fails is given the message again, and what follows waits. *)
+(* Cancelling stops the loop between messages, never inside the handler: it
+   waits for the call in flight. The offset of a message whose handler has
+   returned is committed before the loop looks at the order to stop; the
+   client offers no way to read it back, so that is not checked here. *)
+let test_cancelling_waits_for_the_handler_in_flight env brokers () =
+  with_bus env brokers @@ fun f ->
+  Eio.Switch.run @@ fun sw ->
+  let uri = "kafka://" ^ unique "graceful" in
+  let handling, set_handling = Eio.Promise.create () in
+  let may_return, let_return = Eio.Promise.create () in
+  let returned = ref false in
+  let consumer =
+    ok "consumer"
+      (Bus.consumer f.bus ~uri ~group:(unique "g") ~decode:(fun m ->
+           Ok (Message.payload m)))
+  in
+  let subscription =
+    ok "subscribe"
+      (Consumer.subscribe consumer (fun _ ->
+           Eio.Promise.resolve set_handling ();
+           Eio.Promise.await may_return;
+           returned := true;
+           Ok ()))
+  in
+  publish (producer f uri) ("k", "slow");
+  Eio.Time.with_timeout_exn f.clock 30.0 (fun () -> Eio.Promise.await handling);
+  let cancelled =
+    Eio.Fiber.fork_promise ~sw (fun () -> Subscription.cancel subscription)
+  in
+  Eio.Time.sleep f.clock 0.5;
+  Alcotest.(check bool)
+    "cancel waits while the handler runs" false
+    (Eio.Promise.is_resolved cancelled);
+  Eio.Promise.resolve let_return ();
+  Eio.Time.with_timeout_exn f.clock 30.0 (fun () -> Eio.Promise.await_exn cancelled);
+  Alcotest.(check bool) "the handler has returned" true !returned
+
 let test_a_failing_handler_gets_the_message_again env brokers () =
   with_bus env brokers @@ fun f ->
   let uri = "kafka://" ^ unique "retry" in
@@ -222,6 +259,8 @@ let () =
                 test_messages_with_one_key_keep_their_order;
               case "a cancelled subscription receives nothing more"
                 test_a_cancelled_subscription_receives_nothing_more;
+              case "cancelling waits for the handler in flight"
+                test_cancelling_waits_for_the_handler_in_flight;
               case "a failing handler gets the message again"
                 test_a_failing_handler_gets_the_message_again;
               case "a permanent failure is skipped" test_a_permanent_failure_is_skipped;

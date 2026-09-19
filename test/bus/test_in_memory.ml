@@ -141,6 +141,71 @@ let test_a_cancelled_subscription_receives_nothing_more () =
   settle ();
   Alcotest.(check (list string)) "nothing after" [ "before" ] (List.rev !seen)
 
+(* A subscription cancelled is a handler that is not running: cancelling waits
+   for the call in flight. *)
+let test_cancelling_waits_for_the_handler_in_flight () =
+  with_bus @@ fun ~sw bus ->
+  let handling, set_handling = Eio.Promise.create () in
+  let may_return, let_return = Eio.Promise.create () in
+  let subscription =
+    ok "subscribe"
+      (Consumer.subscribe (consumer bus "in-memory://test.t1" "g") (fun _ ->
+           Eio.Promise.resolve set_handling ();
+           Eio.Promise.await may_return;
+           Ok ()))
+  in
+  publish (producer bus "in-memory://test.t1") "slow";
+  Eio.Promise.await handling;
+  let cancelled =
+    Eio.Fiber.fork_promise ~sw (fun () -> Subscription.cancel subscription)
+  in
+  settle ();
+  Alcotest.(check bool)
+    "waits while the handler runs" false
+    (Eio.Promise.is_resolved cancelled);
+  Eio.Promise.resolve let_return ();
+  settle ();
+  Alcotest.(check bool)
+    "comes back when the handler has returned" true
+    (Eio.Promise.is_resolved cancelled)
+
+(* A handler may cancel its own subscription: it does not wait for itself,
+   and the message in hand is its last. *)
+let test_a_handler_may_cancel_its_own_subscription () =
+  with_bus @@ fun ~sw:_ bus ->
+  let seen = ref [] and own = ref None in
+  let subscription =
+    ok "subscribe"
+      (Consumer.subscribe (consumer bus "in-memory://test.t1" "g") (fun value ->
+           seen := value :: !seen;
+           Option.iter Subscription.cancel !own;
+           Ok ()))
+  in
+  own := Some subscription;
+  let producer = producer bus "in-memory://test.t1" in
+  publish producer "first";
+  publish producer "second";
+  settle ();
+  Alcotest.(check (list string)) "the first was the last" [ "first" ] (List.rev !seen)
+
+(* The group's handler is the latest subscription's: cancelling an earlier one
+   afterwards takes nothing from it. *)
+let test_cancelling_an_earlier_subscription_leaves_the_later_one () =
+  with_bus @@ fun ~sw:_ bus ->
+  let consumer = consumer bus "in-memory://test.t1" "g" in
+  let earlier = ok "subscribe" (Consumer.subscribe consumer (fun _ -> Ok ())) in
+  let seen = ref [] in
+  let _later : Subscription.t =
+    ok "subscribe"
+      (Consumer.subscribe consumer (fun value ->
+           seen := value :: !seen;
+           Ok ()))
+  in
+  Subscription.cancel earlier;
+  publish (producer bus "in-memory://test.t1") "still delivered";
+  settle ();
+  Alcotest.(check (list string)) "the later one" [ "still delivered" ] (List.rev !seen)
+
 (* A message the consumer cannot decode is skipped, not fatal. *)
 let test_an_undecodable_message_is_skipped () =
   with_bus @@ fun ~sw:_ bus ->
@@ -277,5 +342,11 @@ let () =
           case "cancelling twice is harmless" test_cancelling_twice_is_harmless;
           case "a cancelled subscription receives nothing more"
             test_a_cancelled_subscription_receives_nothing_more;
+          case "cancelling waits for the handler in flight"
+            test_cancelling_waits_for_the_handler_in_flight;
+          case "a handler may cancel its own subscription"
+            test_a_handler_may_cancel_its_own_subscription;
+          case "cancelling an earlier subscription leaves the later one"
+            test_cancelling_an_earlier_subscription_leaves_the_later_one;
         ] );
     ]

@@ -74,9 +74,11 @@ let adapter ~sw ~clock ?(loops = Loops.default) outbox : Ascetic_bus.Adapter.t =
           {
             subscribe =
               (fun handler ->
-                let stop, resolve_stop = Eio.Promise.create () in
                 let subscriber row = handler (wire_of row) in
-                let rec dispatching () =
+                (* Told to stop, [run] lets its loops finish the batch they
+                   have in hand, commit it and give the connection back, and
+                   returns; cancelling the subscription waits for that. *)
+                let rec dispatching ~stop =
                   match
                     Pg_outbox.run outbox ~clock ~loops ~shutdown:stop
                       (Selection.group group) subscriber
@@ -88,14 +90,9 @@ let adapter ~sw ~clock ?(loops = Loops.default) outbox : Ascetic_bus.Adapter.t =
                       Eio.Fiber.first
                         (fun () -> Eio.Time.Mono.sleep clock loops.poll_interval)
                         (fun () -> Eio.Promise.await stop);
-                      if not (Eio.Promise.is_resolved stop) then dispatching ()
+                      if not (Eio.Promise.is_resolved stop) then dispatching ~stop
                 in
-                Eio.Fiber.fork_daemon ~sw (fun () ->
-                    dispatching ();
-                    `Stop_daemon);
-                Ok
-                  (Ascetic_bus.Subscription.make (fun () ->
-                       ignore (Eio.Promise.try_resolve resolve_stop ()))));
+                Ok (Ascetic_bus.Handling.loop ~sw dispatching));
           });
     producer =
       (fun ~uri ->

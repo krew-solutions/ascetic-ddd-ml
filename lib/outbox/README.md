@@ -87,7 +87,9 @@ let* dispatcher = Bridge.run (Bridge.create bus) ~from:"outbox://all" ~group:"di
 
 Headers travel as string fields of `metadata`, so `message_id` keeps its
 unique index. The dispatcher is a daemon fiber on the switch the adapter was
-given; cancel the subscription to stop it. That switch must end before the
+given; cancel the subscription to stop it, and the cancel returns when the
+dispatcher has finished the batch it had in hand, acknowledged and
+committed, and given its connection back (ADR-0016). That switch must end before the
 connection pool's does, so give the dispatchers a switch of their own inside
 the pool's: a dispatcher cancelled with a connection in hand gives it back
 to a pool that is still there, where a pool ending at the same time would

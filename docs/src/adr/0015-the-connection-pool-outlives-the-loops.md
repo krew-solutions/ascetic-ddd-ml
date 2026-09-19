@@ -83,4 +83,4 @@ on the way out; it is a matter of this port's libraries.
   before, with no hang.
 - Stopping a loop before its switch ends, so that it finishes its batch
   rather than being cancelled in it, is a separate matter: the rule makes
-  shutdown safe, not graceful.
+  shutdown safe, not graceful. ADR-0016 is the graceful half.

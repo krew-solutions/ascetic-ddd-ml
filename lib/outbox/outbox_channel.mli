@@ -45,6 +45,11 @@ val adapter :
     inside a transaction, see {!producer}. The outbox is typed by the bus's failure, the
     error a wire handler returns.
 
+    Cancelling the subscription stops the dispatcher in good order: it tells the loops to
+    stop and returns when they have, the batch in hand acknowledged and committed and the
+    connection given back (ADR-0016). A handler cancelling its own subscription does not
+    wait for itself.
+
     [sw] must end before the switch of the outbox's connection pool does: give the
     dispatchers a switch of their own inside the pool's. A dispatcher is cancelled with
     its switch wherever it is, with a connection in hand more often than not, and gives

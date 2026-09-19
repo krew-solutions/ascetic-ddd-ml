@@ -3,13 +3,15 @@ module Message = Ascetic_bus.Message
 module Bus_error = Ascetic_bus.Bus_error
 module Bus_uri = Ascetic_bus.Bus_uri
 module Subscription = Ascetic_bus.Subscription
+module Handling = Ascetic_bus.Handling
 module Failure = Ascetic_bus.Failure
 module Log = Ascetic_bus.Log
 
 type topic = {
   queue : Message.t Eio.Stream.t;
-  (* a group joins with no handler; subscribing gives it one *)
-  groups : (string, Adapter.handler option) Hashtbl.t;
+  (* a group joins with no handler; subscribing gives it one, with the count
+     of its calls in flight, which cancelling waits for *)
+  groups : (string, (Adapter.handler * Handling.t) option) Hashtbl.t;
 }
 
 type t = {
@@ -47,17 +49,30 @@ let deliver t uri topic =
             topic.groups [])
     in
     List.iter
-      (fun (group, (handler : Adapter.handler)) ->
-        match handler message with
-        | Ok () -> ()
-        | Error failure ->
-            Log.warn (fun m ->
-                m "in-memory[%s/%s]: handler failed: %a" uri group Failure.pp failure)
-        | exception (Eio.Cancel.Cancelled _ as cancelled) -> raise cancelled
-        | exception exn ->
-            Log.warn (fun m ->
-                m "in-memory[%s/%s]: handler raised: %s" uri group
-                  (Printexc.to_string exn)))
+      (fun (group, ((handler : Adapter.handler), handling)) ->
+        (* The call is admitted under the lock the handler is detached under,
+           and only if it is still attached: a subscription cancelled since
+           the handlers were read is not called, and one cancelled from now
+           on waits for this call. *)
+        let attached =
+          locked t (fun () ->
+              match Hashtbl.find_opt topic.groups group with
+              | Some (Some (_, current)) when current == handling ->
+                  Handling.admit handling;
+                  true
+              | Some _ | None -> false)
+        in
+        if attached then
+          match Handling.run handling (fun () -> handler message) with
+          | Ok () -> ()
+          | Error failure ->
+              Log.warn (fun m ->
+                  m "in-memory[%s/%s]: handler failed: %a" uri group Failure.pp failure)
+          | exception (Eio.Cancel.Cancelled _ as cancelled) -> raise cancelled
+          | exception exn ->
+              Log.warn (fun m ->
+                  m "in-memory[%s/%s]: handler raised: %s" uri group
+                    (Printexc.to_string exn)))
       handlers;
     loop ()
   in
@@ -98,12 +113,20 @@ let consumer t ~uri ~group : (Adapter.consumer, Bus_error.t) result =
       {
         subscribe =
           (fun handler ->
-            locked t (fun () -> Hashtbl.replace topic.groups group (Some handler));
+            let handling = Handling.create () in
+            locked t (fun () ->
+                Hashtbl.replace topic.groups group (Some (handler, handling)));
             Ok
-              (Subscription.make (fun () ->
+              (Subscription.make
+                 ~quiesce:(fun () -> Handling.quiesce handling)
+                 (fun () ->
                    locked t (fun () ->
-                       if Hashtbl.mem topic.groups group then
-                         Hashtbl.replace topic.groups group None))));
+                       (* a later subscription of the group is not this one's
+                          to detach *)
+                       match Hashtbl.find_opt topic.groups group with
+                       | Some (Some (_, current)) when current == handling ->
+                           Hashtbl.replace topic.groups group None
+                       | Some _ | None -> ()))));
       }
 
 let producer t ~uri : (Adapter.producer, Bus_error.t) result =

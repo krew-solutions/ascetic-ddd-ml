@@ -42,6 +42,11 @@ val consumer :
     handler that can tell, and the message is parked at once (ADR-0009). A defect that
     stops {!Pg_inbox.run} is reported and the loop starts again after the poll interval.
 
+    Cancelling the subscription stops the processing in good order: it tells the loops to
+    stop and returns when they have, the message in hand marked and committed and the
+    connection given back (ADR-0016). A handler cancelling its own subscription does not
+    wait for itself.
+
     [sw] must end before the switch of the inbox's connection pool does: give the loops a
     switch of their own inside the pool's. A loop is cancelled with its switch wherever it
     is, with a connection in hand more often than not, and gives the connection back to a

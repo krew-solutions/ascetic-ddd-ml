@@ -203,6 +203,71 @@ let test_a_failing_subscriber_gets_the_batch_again env uri () =
   Alcotest.(check int) "two attempts" 2 !attempts;
   Subscription.cancel subscription
 
+(* Cancelling the dispatcher's subscription waits for the batch it has in
+   hand: when it returns, the handler has returned and the batch is
+   acknowledged and committed, read here at once, with no polling. *)
+let test_cancelling_waits_for_the_batch_in_hand_to_be_committed env uri () =
+  with_fixture ~name:"graceful" env uri @@ fun f ->
+  let registry =
+    bus "register outbox"
+      (Bus.register Bus.empty ~scheme:Channel.scheme
+         (Channel.adapter ~sw:f.sw ~clock:f.clock ~loops f.outbox))
+  in
+  let handling, set_handling = Eio.Promise.create () in
+  let may_return, let_return = Eio.Promise.create () in
+  let returned = ref false in
+  let slow =
+    bus "consumer"
+      (Bus.consumer registry ~uri:"outbox://all" ~group:"slow" ~decode:(fun m ->
+           Ok (Message.payload m)))
+  in
+  let subscription =
+    bus "subscribe"
+      (Consumer.subscribe slow (fun _order ->
+           Eio.Promise.resolve set_handling ();
+           Eio.Promise.await may_return;
+           returned := true;
+           Ok ()))
+  in
+  let placed =
+    Channel.producer f.outbox ~destination:"in-memory://orders/order-3"
+      ~encode:(fun order ->
+        Message.with_header (Message.make order) "message_id"
+          "00000000-0000-4000-8000-000000000003")
+  in
+  unwrap "commit"
+    (Pool.session f.sessions ~lift (fun session ->
+         Session.atomic session ~lift (fun tx ->
+             bus "publish" (Transactional.Producer.publish placed tx "placed");
+             Ok ())));
+  let in_time what wait =
+    Eio.Time.Timeout.run_exn (Eio.Time.Timeout.seconds f.clock 20.0) (fun () ->
+        try wait () with Eio.Time.Timeout -> Alcotest.failf "%s: not in time" what)
+  in
+  in_time "the handler is called" (fun () -> Eio.Promise.await handling);
+  let cancelled =
+    Eio.Fiber.fork_promise ~sw:f.sw (fun () -> Subscription.cancel subscription)
+  in
+  Eio.Time.Mono.sleep f.clock 0.2;
+  Alcotest.(check bool)
+    "cancel waits while the handler runs" false
+    (Eio.Promise.is_resolved cancelled);
+  Eio.Promise.resolve let_return ();
+  in_time "cancel returns" (fun () -> Eio.Promise.await_exn cancelled);
+  Alcotest.(check bool) "the handler has returned" true !returned;
+  let positions =
+    unwrap "positions"
+      (Pool.session f.sessions ~lift (fun session ->
+           Outbox.positions f.outbox session (Ascetic_outbox.Selection.group "slow")))
+  in
+  Alcotest.(check bool)
+    "the batch is acknowledged and committed" true
+    (positions <> []
+    && List.for_all
+         (fun position ->
+           not (Ascetic_outbox.Position.equal position Ascetic_outbox.Position.zero))
+         positions)
+
 let () =
   match Sys.getenv_opt "TEST_DATABASE_URL" with
   | None ->
@@ -220,5 +285,7 @@ let () =
                 test_a_committed_message_crosses_the_bridge_and_a_rolled_back_one_does_not;
               case "a failing subscriber gets the batch again"
                 test_a_failing_subscriber_gets_the_batch_again;
+              case "cancelling waits for the batch in hand to be committed"
+                test_cancelling_waits_for_the_batch_in_hand_to_be_committed;
             ] );
         ]

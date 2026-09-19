@@ -14,6 +14,11 @@
     consumer cannot decode, and one whose failure is {!Ascetic_bus.Failure.Permanent}: a
     poison message must not stop the partition.
 
+    Cancelling a subscription stops its loop between messages, never inside the handler,
+    and waits for it (ADR-0016): the message in hand is handled and its offset committed.
+    One whose handler keeps failing when the order to stop comes is left uncommitted, and
+    comes again when the group next reads from its committed offset.
+
     A consumer and the broker's producer are not domain-safe: share them between fibers of
     one Eio domain only, as [kafka-eio] requires. *)
 

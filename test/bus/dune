@@ -1,3 +1,4 @@
 (tests
- (names test_bus test_in_memory test_bridge test_stage test_transactional)
+ (names test_bus test_in_memory test_bridge test_stage test_transactional
+  test_handling)
  (libraries ascetic_ddd.bus ascetic_ddd.bus.in_memory alcotest eio eio_main))

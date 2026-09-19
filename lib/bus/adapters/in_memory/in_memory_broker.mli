@@ -11,7 +11,12 @@
     Delivery is a fiber per topic: it takes messages off a bounded queue and hands each,
     in order, to the handler of every group. A handler that fails or raises is reported
     and the next message is delivered; a handler that is slow holds the topic, which is
-    the back-pressure the queue exists for. *)
+    the back-pressure the queue exists for.
+
+    Cancelling a subscription detaches its handler and waits for it if it is running
+    (ADR-0016); the topic goes on for the other groups. A call is admitted under the lock
+    a handler is detached under, so a handler is not called once its cancel has returned.
+*)
 
 type t
 

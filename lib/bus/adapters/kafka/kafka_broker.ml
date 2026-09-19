@@ -4,6 +4,7 @@ module Failure = Ascetic_bus.Failure
 module Bus_error = Ascetic_bus.Bus_error
 module Bus_uri = Ascetic_bus.Bus_uri
 module Subscription = Ascetic_bus.Subscription
+module Handling = Ascetic_bus.Handling
 module Log = Ascetic_bus.Log
 
 type t = {
@@ -54,45 +55,71 @@ let wire_of (received : Kafka.Consumer.message) =
       Message.with_header message name (Option.value value ~default:""))
     message received.headers
 
-(* The delivery fiber of one subscription. *)
-let deliver t ~uri ~group consumer (handler : Adapter.handler) =
+(* The delivery loop of one subscription, until it is told to stop. It stops
+   between messages, never inside the handler: a message whose handler has
+   returned has its offset committed before the loop looks at [stop]. *)
+let deliver t ~uri ~group ~stop consumer (handler : Adapter.handler) =
+  (* Waits, unless told to stop meanwhile; whether to go on. *)
+  let pause seconds =
+    Eio.Fiber.first
+      (fun () ->
+        Eio.Time.sleep t.clock seconds;
+        true)
+      (fun () ->
+        Eio.Promise.await stop;
+        false)
+  in
   (* A handler that fails is retried until it succeeds: the partition waits,
-     which is what keeps its order. *)
+     which is what keeps its order. Whether the message is done with, handled
+     or skipped, so that its offset may be committed; it is not when the loop
+     was told to stop while the handler kept failing, and then the message
+     comes again when the group next reads from its committed offset. *)
   let rec handle message =
     match handler message with
-    | Ok () -> ()
+    | Ok () -> true
     | Error (Failure.Permanent _ as failure) ->
         Log.warn (fun m ->
             m "kafka[%s/%s]: handler failed for good, skipping: %a" uri group Failure.pp
-              failure)
+              failure);
+        true
     | Error failure ->
         Log.warn (fun m ->
             m "kafka[%s/%s]: handler failed, retrying: %a" uri group Failure.pp failure);
-        Eio.Time.sleep t.clock t.retry_after;
-        handle message
+        pause t.retry_after && handle message
     | exception (Eio.Cancel.Cancelled _ as cancelled) -> raise cancelled
     | exception exn ->
         Log.warn (fun m ->
             m "kafka[%s/%s]: handler raised, skipping: %s" uri group
-              (Printexc.to_string exn))
+              (Printexc.to_string exn));
+        true
   in
   let rec next () =
-    match Kafka.Consumer.fetch consumer with
-    | Error Kafka.Error.Destroy -> ()
-    | Error error ->
-        Log.warn (fun m ->
-            m "kafka[%s/%s]: receiving failed: %s" uri group (Kafka.Error.to_string error));
-        Eio.Time.sleep t.clock t.retry_after;
-        next ()
-    | Ok received ->
-        handle (wire_of received);
-        (match Kafka.Consumer.commit consumer received with
-        | Ok () -> ()
-        | Error error ->
-            Log.warn (fun m ->
-                m "kafka[%s/%s]: committing the offset failed: %s" uri group
-                  (Kafka.Error.to_string error)));
-        next ()
+    if not (Eio.Promise.is_resolved stop) then
+      (* The fetch goes first: if a record and the order to stop come
+         together, the record is kept and handled. *)
+      match
+        Eio.Fiber.first
+          (fun () -> `Fetched (Kafka.Consumer.fetch consumer))
+          (fun () ->
+            Eio.Promise.await stop;
+            `Stop)
+      with
+      | `Stop | `Fetched (Error Kafka.Error.Destroy) -> ()
+      | `Fetched (Error error) ->
+          Log.warn (fun m ->
+              m "kafka[%s/%s]: receiving failed: %s" uri group
+                (Kafka.Error.to_string error));
+          if pause t.retry_after then next ()
+      | `Fetched (Ok received) ->
+          if handle (wire_of received) then begin
+            (match Kafka.Consumer.commit consumer received with
+            | Ok () -> ()
+            | Error error ->
+                Log.warn (fun m ->
+                    m "kafka[%s/%s]: committing the offset failed: %s" uri group
+                      (Kafka.Error.to_string error)));
+            next ()
+          end
   in
   next ()
 
@@ -112,30 +139,20 @@ let consumer t ~uri ~group : (Adapter.consumer, Bus_error.t) result =
          }
          ~sw:t.sw)
   in
-  (* the delivery fiber, while a handler is attached *)
-  let delivery = ref None in
-  let stop () =
-    Option.iter (fun context -> Eio.Cancel.cancel context Exit) !delivery;
-    delivery := None
-  in
+  (* the subscription whose loop reads the consumer, while there is one *)
+  let current = ref None in
   Ok
     {
       Adapter.subscribe =
         (fun handler ->
-          (* a previous delivery is stopped first *)
-          stop ();
-          Eio.Fiber.fork_daemon ~sw:t.sw (fun () ->
-              (try
-                 Eio.Cancel.sub (fun context ->
-                     delivery := Some context;
-                     deliver t ~uri ~group consumer handler)
-               with Eio.Cancel.Cancelled _ -> ());
-              `Stop_daemon);
-          let mine = !delivery in
-          Ok
-            (Subscription.make (fun () ->
-                 Option.iter (fun context -> Eio.Cancel.cancel context Exit) mine;
-                 if !delivery == mine then delivery := None)));
+          (* a previous delivery is stopped first, in good order *)
+          Option.iter Subscription.cancel !current;
+          let subscription =
+            Handling.loop ~sw:t.sw (fun ~stop ->
+                deliver t ~uri ~group ~stop consumer handler)
+          in
+          current := Some subscription;
+          Ok subscription);
     }
 
 let shared_producer t =

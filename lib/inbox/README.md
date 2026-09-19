@@ -74,7 +74,9 @@ after-commit delivery and processing in the marking transaction, in one
 database.
 
 The processing loop is a daemon fiber on the switch the consumer was given;
-cancel the subscription to stop it. That switch must end before the
+cancel the subscription to stop it, and the cancel returns when the loop has
+finished the message it had in hand, marked and committed, and given its
+connection back (ADR-0016). That switch must end before the
 connection pool's does, so give the loops a switch of their own inside the
 pool's: a loop cancelled with a connection in hand gives it back to a pool
 that is still there, where a pool ending at the same time would wait for it
