@@ -41,4 +41,9 @@ val consumer :
     carries the one verdict it knows: [Ascetic_bus.Failure.Permanent], from a stage or a
     handler that can tell, and the message is parked at once (ADR-0009). A defect that
     stops {!Pg_inbox.run} is reported and the loop starts again after the poll interval.
-*)
+
+    [sw] must end before the switch of the inbox's connection pool does: give the loops a
+    switch of their own inside the pool's. A loop is cancelled with its switch wherever it
+    is, with a connection in hand more often than not, and gives the connection back to a
+    pool that is still there; a pool ending at the same time would wait for that
+    connection for ever (ADR-0015). *)

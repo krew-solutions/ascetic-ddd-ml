@@ -87,7 +87,11 @@ let* dispatcher = Bridge.run (Bridge.create bus) ~from:"outbox://all" ~group:"di
 
 Headers travel as string fields of `metadata`, so `message_id` keeps its
 unique index. The dispatcher is a daemon fiber on the switch the adapter was
-given; cancel the subscription to stop it. `~loops` on the adapter says how
+given; cancel the subscription to stop it. That switch must end before the
+connection pool's does, so give the dispatchers a switch of their own inside
+the pool's: a dispatcher cancelled with a connection in hand gives it back
+to a pool that is still there, where a pool ending at the same time would
+wait for it for ever (ADR-0015). `~loops` on the adapter says how
 it runs, how many loops in this process, how long one waits, the same
 `Loops.t` that `run` takes. On the bus the outbox is typed by the bus's
 failure, `Ascetic_bus.Failure.t Pg_outbox.t`: that is the error a wire

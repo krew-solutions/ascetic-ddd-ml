@@ -45,13 +45,17 @@ type fixture = {
 let loops = { Loops.default with poll_interval = 0.02 }
 
 let with_fixture ~name env uri body =
-  Eio.Switch.run @@ fun sw ->
+  (* The pool is on a switch of its own, outside the one the dispatcher runs
+     on: a loop cancelled with a connection in hand gives it back to a pool
+     that is still there, where a pool ending with it would wait for the
+     connection for ever. *)
+  Eio.Switch.run @@ fun pool_sw ->
   let stdenv = (env :> Caqti_eio.stdenv) in
   let sessions =
     match
       Caqti_eio_unix.connect_pool
         ~pool_config:(Caqti_pool_config.create ~max_size:8 ())
-        ~sw ~stdenv uri
+        ~sw:pool_sw ~stdenv uri
     with
     | Ok pool -> Pool.of_pool pool
     | Error err -> Alcotest.failf "connect_pool failed: %a" Caqti_error.pp err
@@ -69,6 +73,7 @@ let with_fixture ~name env uri body =
            (Printf.sprintf "DROP TABLE IF EXISTS %s, %s_meta, %s_offsets" table table
               table);
          Outbox.setup outbox session));
+  Eio.Switch.run @@ fun sw ->
   body
     {
       sw;

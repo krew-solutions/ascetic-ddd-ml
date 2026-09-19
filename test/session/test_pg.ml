@@ -171,6 +171,53 @@ let test_the_pool_hands_out_working_sessions env uri () =
   Alcotest.(check (result unit app_error)) "committed" (Ok ()) result;
   Alcotest.(check (list int)) "visible from another connection" [ 5 ] (ids conn)
 
+(* A loop is a daemon fiber that holds a pooled connection most of the time. When its
+   switch ends it is cancelled wherever it is, here in the middle of a statement; the
+   pool, on a switch outside, takes the connection back and goes on serving. With the
+   loop on the pool's own switch the connection would never come back and the switch
+   would never end, so the pool must outlive the loops. *)
+let test_a_pool_outlives_loops_cancelled_in_mid_statement env uri () =
+  with_table env uri @@ fun ~sw ~stdenv conn ->
+  let pool =
+    match Caqti_eio_unix.connect_pool ~sw ~stdenv uri with
+    | Ok pool -> Pool.of_pool pool
+    | Error err -> Alcotest.failf "connect_pool failed: %a" Caqti_error.pp err
+  in
+  let wait session =
+    let module C = (val Session.connection session) in
+    let open Caqti_request.Infix in
+    ignore
+      (C.find
+         ((Caqti_type.unit ->! Caqti_type.string)
+            ~oneshot:true "SELECT pg_sleep(1)::text")
+         ())
+  in
+  let in_the_statement, reached = Eio.Promise.create () in
+  (* The loops' switch ends once the statement the loop was in has ended on
+     the server: the rollback is protected from the cancellation and goes
+     after it. *)
+  Eio.Switch.run (fun loops ->
+      Eio.Fiber.fork_daemon ~sw:loops (fun () ->
+          let (_ : (unit, app_error) result) =
+            Pool.session pool ~lift (fun session ->
+                atomic session (fun session ->
+                    insert session 9;
+                    Eio.Promise.resolve reached ();
+                    wait session;
+                    Ok ()))
+          in
+          `Stop_daemon);
+      Eio.Promise.await in_the_statement);
+  Alcotest.(check (list int)) "what the loop was doing is rolled back" [] (ids conn);
+  let result =
+    Pool.session pool ~lift (fun session ->
+        atomic session (fun session ->
+            insert session 10;
+            Ok ()))
+  in
+  Alcotest.(check (result unit app_error)) "the pool still serves" (Ok ()) result;
+  Alcotest.(check (list int)) "committed" [ 10 ] (ids conn)
+
 let cases env uri =
   [
     Alcotest.test_case "nested scope commits through a savepoint" `Quick
@@ -186,6 +233,8 @@ let cases env uri =
       (test_a_cancelled_scope_is_rolled_back_and_the_connection_stays_usable env uri);
     Alcotest.test_case "the pool hands out working sessions" `Quick
       (test_the_pool_hands_out_working_sessions env uri);
+    Alcotest.test_case "a pool outlives loops cancelled in mid-statement" `Quick
+      (test_a_pool_outlives_loops_cancelled_in_mid_statement env uri);
   ]
 
 let () =

@@ -43,4 +43,10 @@ val adapter :
     accepted. A defect that stops {!Pg_outbox.run} is reported and the dispatcher starts
     again after the poll interval. Its producer is refused: the outbox publishes only
     inside a transaction, see {!producer}. The outbox is typed by the bus's failure, the
-    error a wire handler returns. *)
+    error a wire handler returns.
+
+    [sw] must end before the switch of the outbox's connection pool does: give the
+    dispatchers a switch of their own inside the pool's. A dispatcher is cancelled with
+    its switch wherever it is, with a connection in hand more often than not, and gives
+    the connection back to a pool that is still there; a pool ending at the same time
+    would wait for that connection for ever (ADR-0015). *)

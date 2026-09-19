@@ -253,6 +253,29 @@ as for every session of this library and for the reason given below.
 connection serves one fiber at a time, so work inside a scope is
 sequential; concurrency comes from the pool, one session per fiber.
 
+The pool must outlive every fiber that takes a session from it (ADR-0015).
+Caqti drains a pool when the switch it was connected on ends, and waits for
+every connection to come back. A daemon fiber cancelled by that same switch
+with a connection in hand cannot give it back any more, so the switch never
+ends and the process hangs on its way out. A loop that runs as a daemon, a
+dispatcher of the outbox, the processing of the inbox, therefore goes on a
+switch of its own inside the pool's:
+
+```ocaml
+Eio.Switch.run @@ fun pool_sw ->
+let pool = Caqti_session_pool.of_pool (connect_pool ~sw:pool_sw uri) in
+Eio.Switch.run @@ fun loops_sw ->
+let bus = register ~sw:loops_sw pool in
+serve bus
+```
+
+When the inner switch ends, however it ends, the loops are cancelled where
+they are, what they were doing is rolled back, their connections return to
+a pool that is still there, and then the pool is drained with nothing out. A
+loop cancelled in the middle of a statement ends when the statement does on
+the server: the rollback is protected from the cancellation and goes after
+it.
+
 Beside the session, the Caqti library carries what every PostgreSQL adapter
 over it needs: `Identifier`, a table or sequence name known safe to splice
 into SQL, lower-case letters, digits and underscores, at most forty

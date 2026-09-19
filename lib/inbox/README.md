@@ -74,7 +74,11 @@ after-commit delivery and processing in the marking transaction, in one
 database.
 
 The processing loop is a daemon fiber on the switch the consumer was given;
-cancel the subscription to stop it. A handler's error is a failure of the
+cancel the subscription to stop it. That switch must end before the
+connection pool's does, so give the loops a switch of their own inside the
+pool's: a loop cancelled with a connection in hand gives it back to a pool
+that is still there, where a pool ending at the same time would wait for it
+for ever (ADR-0015). A handler's error is a failure of the
 moment, retried as the inbox's retries say, unless it is the one verdict the
 bus carries, `Ascetic_bus.Failure.Permanent`, from a handler or a stage that
 can tell: the inbox's consumer reads it and parks the message at once.
