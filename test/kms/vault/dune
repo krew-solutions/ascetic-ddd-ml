@@ -1,0 +1,30 @@
+(test
+ (name test_vault_transit)
+ (modules test_vault_transit)
+ (libraries
+  ascetic_ddd.kms
+  ascetic_ddd.kms.vault
+  ascetic_ddd.session
+  ascetic_ddd.session.rest
+  alcotest
+  base64
+  eio
+  eio_main
+  yojson))
+
+(test
+ (name test_vault)
+ (modules test_vault)
+ (enabled_if %{lib-available:cohttp-eio})
+ (build_if %{lib-available:cohttp-eio})
+ (libraries
+  ascetic_ddd.kms
+  ascetic_ddd.kms.vault
+  ascetic_ddd.kms.vault.cohttp
+  ascetic_ddd.session
+  ascetic_ddd.session.rest
+  alcotest
+  cohttp-eio
+  eio
+  eio_main
+  yojson))

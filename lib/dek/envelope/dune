@@ -1,0 +1,11 @@
+(library
+ (name ascetic_dek_envelope)
+ (public_name ascetic_ddd.dek.envelope)
+ (libraries
+  ascetic_ddd.dek
+  ascetic_ddd.kms
+  ascetic_ddd.bus
+  ascetic_ddd.session
+  base64
+  eio
+  mtime))

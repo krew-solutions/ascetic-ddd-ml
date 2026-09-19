@@ -34,3 +34,16 @@ services:
       - redpanda.auto_create_topics_enabled=true
     ports:
       - "59092:9092"
+
+  # A Vault dev server for the tests of ascetic_ddd.kms.vault:
+  #   export TEST_VAULT_ADDR=http://localhost:58200 TEST_VAULT_TOKEN=test-root-token
+  # The tests enable the transit engine themselves.
+  vault:
+    image: hashicorp/vault:1.17
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: test-root-token
+      VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+    cap_add:
+      - IPC_LOCK
+    ports:
+      - "58200:8200"

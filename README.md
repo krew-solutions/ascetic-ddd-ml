@@ -12,10 +12,11 @@ Domain-Driven Design in a functional style.
 - **Unit of Work** (`ascetic_ddd.unit_of_work`): the abstract
   `Unit_of_work.S` signature plus a Caqti-backed implementation.
 - **Session** (`ascetic_ddd.session`, `.session.caqti`, `.session.memory`,
-  `.session.composite`): the unit of work as an opaque handle with one
-  operation, `atomic` — nested scopes as savepoints, rollback under
-  cancellation, PostgreSQL through Caqti, a journal-recording session for
-  tests, two sessions acting as one. The successor of `unit_of_work`; see
+  `.session.composite`, `.session.rest`): the unit of work as an opaque
+  handle with one operation, `atomic` — nested scopes as savepoints,
+  rollback under cancellation, PostgreSQL through Caqti, a journal-recording
+  session for tests, two sessions acting as one, a session over an HTTP
+  client whose requests are timed. The successor of `unit_of_work`; see
   [`lib/session/README.md`](./lib/session/README.md).
 - **Outbox** (`ascetic_ddd.outbox`): transactional outbox on PostgreSQL
   over the session — a message committed with the state change it
@@ -41,12 +42,26 @@ Domain-Driven Design in a functional style.
   `Eio`-based in-memory broker for single-process deployments, and an
   optional Kafka adapter on `kafka-eio`; the outbox and the inbox are
   channels of it. See [`lib/bus/README.md`](./lib/bus/README.md).
+- **KMS** (`ascetic_ddd.kms`, `.kms.pg`, `.kms.vault`,
+  `.kms.vault.cohttp`): key management for envelope encryption — a master
+  key over a tenant's versioned key-encryption keys, those over
+  data-encryption keys, AES-256-GCM with the tenant as associated data,
+  rotation, rewrapping, crypto-shredding; keys in a PostgreSQL table or in
+  HashiCorp Vault Transit behind one port, a cache in front of either. See
+  [`lib/kms/README.md`](./lib/kms/README.md).
+- **DEK** (`ascetic_ddd.dek`, `.dek.pg`, `.dek.envelope`): data-encryption
+  keys per resource, versioned, wrapped through the KMS — a store on
+  PostgreSQL, ciphers that carry the key version along, and the envelope
+  stage of the bus, which seals a payload under a key of its own carried in
+  a header, so that the outbox and the inbox hold nothing but ciphertext.
+  See [`lib/dek/README.md`](./lib/dek/README.md).
 - **Saga** (`ascetic_ddd.saga`): routing-slip saga pattern for
   long-running workflows with compensation.
 - **Specification** (`ascetic_ddd.spec`): specification-pattern DSL with
   parser, evaluator and SQL translator.
-- **Encryption** (`ascetic_ddd.encryption`): GDPR-friendly crypto-shredding
-  primitives (KEK/DEK, forgettable payloads).
+- **Encryption** (`ascetic_ddd.encryption`): the earlier crypto-shredding
+  primitives (KEK/DEK, forgettable payloads); `kms` and `dek` are their
+  successors.
 - **Gherkin** (`ascetic_ddd.gherkin`): pure-OCaml `.feature` parser and
   step runner, built on `ocamllex`/`menhir`.
 
@@ -113,11 +128,14 @@ protocol on the runs the tests exercise. See
 ## Tests
 
 Most tests are in-process and run with no external dependencies. The
-outbox, inbox and PostgreSQL session suites (`test/outbox/`,
-`test/inbox/`, `test/session/test_pg.ml`) are integration
-tests against a real PostgreSQL — they are skipped automatically when
-`TEST_DATABASE_URL` is not set, so `dune runtest` is always green out of the
-box.
+outbox, inbox, PostgreSQL session, key management and DEK suites
+(`test/outbox/`, `test/inbox/`, `test/session/test_pg.ml`,
+`test/kms/test_pg.ml`, `test/dek/test_pg.ml`, `test/dek/test_stage.ml`) are
+integration tests against a real PostgreSQL — they are skipped
+automatically when `TEST_DATABASE_URL` is not set, so `dune runtest` is
+always green out of the box. The Vault Transit suite
+(`test/kms/vault/test_vault.ml`) is skipped likewise without
+`TEST_VAULT_ADDR`.
 
 ### Local run with Docker
 
@@ -130,13 +148,16 @@ ephemeral `tmpfs` storage):
 docker compose up -d
 export TEST_DATABASE_URL=postgresql://test:test@localhost:55432/test
 export TEST_KAFKA_BROKERS=localhost:59092   # only where kafka-eio is installed
+export TEST_VAULT_ADDR=http://localhost:58200 TEST_VAULT_TOKEN=test-root-token
 dune runtest
 docker compose down
 ```
 
 The same file starts a Redpanda broker on `localhost:59092` for the tests of
 the optional Kafka adapter; without `kafka-eio` installed they are not
-built, and without `TEST_KAFKA_BROKERS` they are skipped.
+built, and without `TEST_KAFKA_BROKERS` they are skipped. It also starts a
+HashiCorp Vault dev server on `localhost:58200` for the tests of the Vault
+Transit adapter, which enable the `transit` engine themselves.
 
 ### Continuous integration
 
@@ -144,12 +165,12 @@ built, and without `TEST_KAFKA_BROKERS` they are skipped.
 and on pull requests. It:
 
 1. Starts a `postgres:16` service container with the same credentials as
-   `docker-compose.yml`.
+   `docker-compose.yml`, and a Vault dev server.
 2. Installs `libpq-dev` (needed by `caqti-driver-postgresql`).
 3. Sets up OCaml 5.4 via `ocaml/setup-ocaml@v3`.
 4. Runs `opam install . --deps-only --with-test`, then `dune build` and
-   `dune runtest` with `TEST_DATABASE_URL` pointing at the service
-   container.
+   `dune runtest` with `TEST_DATABASE_URL` and `TEST_VAULT_ADDR` pointing
+   at the service containers.
 
 ## License
 

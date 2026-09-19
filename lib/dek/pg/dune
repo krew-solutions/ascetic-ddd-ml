@@ -1,0 +1,10 @@
+(library
+ (name ascetic_dek_pg)
+ (public_name ascetic_ddd.dek.pg)
+ (libraries
+  ascetic_ddd.dek
+  ascetic_ddd.kms
+  ascetic_ddd.session
+  ascetic_ddd.session.caqti
+  caqti
+  caqti-eio))

@@ -6,16 +6,17 @@ application layer sees the handle and `atomic`; everything the
 infrastructure needs, the connection, the depth, the observer, lives in the
 concrete module and is reachable only where the type is known.
 
-Four libraries: `ascetic_ddd.session` is the port and the scope algorithm,
+Five libraries: `ascetic_ddd.session` is the port and the scope algorithm,
 with no database behind it and Eio as its only dependency;
 `ascetic_ddd.session.caqti` is PostgreSQL through Caqti;
 `ascetic_ddd.session.memory` is the journal-recording session for tests;
-`ascetic_ddd.session.composite` makes two sessions act as one. Application
+`ascetic_ddd.session.composite` makes two sessions act as one;
+`ascetic_ddd.session.rest` is the session over an HTTP client. Application
 code and its tests never link the driver.
 
-This library stands beside `ascetic_ddd.unit_of_work`, which the outbox and
-the inbox still use; it is the successor, and the older one stays for
-compatibility.
+This library is the successor of `ascetic_ddd.unit_of_work`, which stays for
+compatibility; the outbox, the inbox, the key management service and the
+store of data-encryption keys are written over the session.
 
 ---
 
@@ -136,7 +137,8 @@ with errors and only a cancellation goes through as an exception.
 
 `Session_observer.t` is a record of two functions, called when a scope
 starts and ends, with the depth, the kind (`Session`, `Transaction`,
-`Savepoint`) and the outcome. `none` observes nothing; `all` composes a
+`Savepoint`, or `Logical` for a scope with no transaction behind it) and
+the outcome. `none` observes nothing; `all` composes a
 list into one. Observers are synchronous and must not raise: they run on the
 completion path of every transaction. One that has to do I/O hands the event
 to a queue and lets a fiber of its own do the waiting.
@@ -207,6 +209,42 @@ commit leaves the distribution counters untouched.
 Of the three shapes the Rust port keeps, pair, tuple and a run-time list,
 only the pair is here: the tuple exists there to avoid method chains that
 OCaml's patterns do not have, and the list waits for shards.
+
+## REST sessions
+
+A REST session is the same shape with no transaction behind it: a scope
+groups work and reports itself, as `Logical`, and does not pretend that
+HTTP calls can be rolled back. The HTTP client is a type parameter,
+`'client Rest_session.t`, so the library depends on no HTTP library. A
+request is timed by wrapping the call that makes it, which is why any
+client works and nothing is hidden:
+
+```ocaml
+open Ascetic_session_rest
+
+let fetch_customer session id =
+  let url = Printf.sprintf "https://crm.example/customers/%d" id in
+  Rest_session.request session ~meth:"GET" ~url (fun () ->
+      Http_client.get (Rest_session.http session) url)
+```
+
+The client and `request` are the capability "this session speaks HTTP": a
+gateway asks for a `'client Rest_session.t` where the client's type is
+known, which is the infrastructure layer. Code polymorphic in the session
+is given the port, `Rest_session.Of (Client)`, a `Session.S`, and the pool
+likewise, `Rest_session_pool.Of (Client)`. One client serves every session:
+an HTTP client is itself the pool of its connections.
+
+`Rest_observer.t` carries a `Session_observer.t` for the scopes and two
+signals for the requests, started and ended, the latter with the time the
+call took, in seconds, and whether it failed; a call that raises is
+reported as failed and the exception goes on. The guard against two scopes
+side by side is the same as for every session. The key management service
+over HashiCorp Vault, `ascetic_ddd.kms.vault`, is written over this
+session.
+
+Of what the Rust port's REST session has, the identity map is not here,
+as for every session of this library and for the reason given below.
 
 ## PostgreSQL
 

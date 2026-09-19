@@ -1,0 +1,9 @@
+(library
+ (name ascetic_kms_pg)
+ (public_name ascetic_ddd.kms.pg)
+ (libraries
+  ascetic_ddd.kms
+  ascetic_ddd.session
+  ascetic_ddd.session.caqti
+  caqti
+  caqti-eio))

@@ -1,0 +1,71 @@
+(test
+ (name test_domain)
+ (modules test_domain)
+ (libraries ascetic_ddd.dek ascetic_ddd.kms alcotest yojson))
+
+(test
+ (name test_pg)
+ (modules test_pg)
+ (libraries
+  ascetic_ddd.dek
+  ascetic_ddd.dek.pg
+  ascetic_ddd.kms
+  ascetic_ddd.kms.pg
+  ascetic_ddd.session
+  ascetic_ddd.session.caqti
+  alcotest
+  caqti
+  caqti-eio
+  caqti-eio.unix
+  caqti-driver-postgresql
+  eio
+  eio_main
+  uri))
+
+(test
+ (name test_stage)
+ (modules test_stage)
+ (libraries
+  ascetic_ddd.dek
+  ascetic_ddd.dek.envelope
+  ascetic_ddd.kms
+  ascetic_ddd.kms.pg
+  ascetic_ddd.bus
+  ascetic_ddd.outbox
+  ascetic_ddd.inbox
+  ascetic_ddd.session
+  ascetic_ddd.session.caqti
+  alcotest
+  base64
+  caqti
+  caqti-eio
+  caqti-eio.unix
+  caqti-driver-postgresql
+  eio
+  eio.mock
+  eio_main
+  mtime
+  uri))
+
+(test
+ (name test_readme)
+ (modules test_readme)
+ (libraries
+  ascetic_ddd.dek
+  ascetic_ddd.dek.pg
+  ascetic_ddd.dek.envelope
+  ascetic_ddd.kms
+  ascetic_ddd.kms.pg
+  ascetic_ddd.bus
+  ascetic_ddd.outbox
+  ascetic_ddd.inbox
+  ascetic_ddd.session
+  ascetic_ddd.session.caqti
+  alcotest
+  caqti
+  caqti-eio
+  caqti-eio.unix
+  caqti-driver-postgresql
+  eio
+  eio_main
+  uri))

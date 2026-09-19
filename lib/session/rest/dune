@@ -1,0 +1,4 @@
+(library
+ (name ascetic_session_rest)
+ (public_name ascetic_ddd.session.rest)
+ (libraries ascetic_ddd.session eio mtime))

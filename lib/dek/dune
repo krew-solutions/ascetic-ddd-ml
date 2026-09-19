@@ -1,0 +1,4 @@
+(library
+ (name ascetic_dek)
+ (public_name ascetic_ddd.dek)
+ (libraries ascetic_ddd.kms ascetic_ddd.session))

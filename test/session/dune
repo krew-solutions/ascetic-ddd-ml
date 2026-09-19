@@ -1,13 +1,16 @@
 (tests
- (names test_memory test_composite test_pg test_transient)
+ (names test_memory test_composite test_pg test_transient test_rest)
  (libraries
   ascetic_ddd.session
   ascetic_ddd.session.memory
   ascetic_ddd.session.composite
   ascetic_ddd.session.caqti
+  ascetic_ddd.session.rest
   alcotest
   eio
   eio_main
+  eio.mock
+  mtime
   caqti
   caqti-eio
   caqti-eio.unix

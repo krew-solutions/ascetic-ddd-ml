@@ -15,6 +15,9 @@ type scope_kind =
   | Session  (** A connection was taken from the pool; no transaction yet. *)
   | Transaction  (** The outermost transaction: [BEGIN]. *)
   | Savepoint  (** A nested transaction: [SAVEPOINT]. *)
+  | Logical
+      (** A scope with no transaction behind it, as in a REST session: it groups work and
+          reports itself, but nothing is committed. *)
 
 (** How a scope ended. What happened on success depends on the kind: a transaction was
     committed, a savepoint released, a session returned. *)

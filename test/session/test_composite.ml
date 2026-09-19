@@ -35,7 +35,8 @@ let events () =
       (match scope.kind with
       | Observer.Session -> "session"
       | Observer.Transaction -> "transaction"
-      | Observer.Savepoint -> "savepoint")
+      | Observer.Savepoint -> "savepoint"
+      | Observer.Logical -> "logical")
   in
   let observer label =
     {

@@ -23,7 +23,7 @@
  (name ascetic_ddd)
  (synopsis "Reusable DDD building blocks for OCaml")
  (description
-  "A lightweight library providing foundational types and patterns for Domain-Driven Design in a functional style: bounded integers, decimals, entity IDs, clocks, domain events, aggregate roots, unit-of-work (with a Caqti-backed implementation) and its successor, a session with nested transaction scopes, a transactional outbox and inbox on PostgreSQL over that session with a JSON trace recorder for checking test runs against the TLA+ models, a scheme-dispatched message bus with an in-memory adapter, a specification DSL, GDPR-friendly encryption primitives, and a pure-OCaml Gherkin runner.")
+  "A lightweight library providing foundational types and patterns for Domain-Driven Design in a functional style: bounded integers, decimals, entity IDs, clocks, domain events, aggregate roots, unit-of-work (with a Caqti-backed implementation) and its successor, a session with nested transaction scopes over PostgreSQL or an HTTP client, a transactional outbox and inbox on PostgreSQL over that session with a JSON trace recorder for checking test runs against the TLA+ models, a scheme-dispatched message bus with an in-memory adapter, key management for envelope encryption over PostgreSQL or HashiCorp Vault Transit, data-encryption keys per resource with a sealing stage for the bus, a specification DSL, GDPR-friendly encryption primitives, and a pure-OCaml Gherkin runner.")
  (depends
   (ocaml
    (>= 5.4.0))
@@ -53,18 +53,25 @@
    (>= 2.1))
   postgresql
   (mtime
-   (and
-    (>= 2.0)
-    :with-test))
+   (>= 2.0))
+  (base64
+   (>= 3.0))
+  eqaf
   menhir
   ppx_deriving
   alcotest
-  mirage-crypto
-  mirage-crypto-rng
+  (mirage-crypto
+   (>= 1.0))
+  (mirage-crypto-rng
+   (>= 1.0))
+  (cohttp-eio
+   (and
+    (>= 6.0)
+    :with-test))
   (qcheck
    (and
     (>= 0.21)
     :with-test)))
- (depopts kafka-eio))
+ (depopts kafka-eio cohttp-eio))
 
 (using menhir 3.0)

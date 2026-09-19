@@ -1,0 +1,5 @@
+(library
+ (name ascetic_kms_vault_cohttp)
+ (public_name ascetic_ddd.kms.vault.cohttp)
+ (optional)
+ (libraries ascetic_ddd.kms.vault cohttp-eio eio http uri yojson))

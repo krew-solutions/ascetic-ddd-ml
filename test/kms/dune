@@ -1,0 +1,46 @@
+(tests
+ (names test_cipher test_domain test_cache)
+ (modules test_cipher test_domain test_cache)
+ (libraries
+  ascetic_ddd.kms
+  ascetic_ddd.session
+  ascetic_ddd.session.memory
+  alcotest
+  eio
+  eio.mock
+  eio_main
+  mtime))
+
+(test
+ (name test_pg)
+ (modules test_pg)
+ (libraries
+  ascetic_ddd.kms
+  ascetic_ddd.kms.pg
+  ascetic_ddd.session
+  ascetic_ddd.session.caqti
+  alcotest
+  caqti
+  caqti-eio
+  caqti-eio.unix
+  caqti-driver-postgresql
+  eio
+  eio_main
+  uri))
+
+(test
+ (name test_readme)
+ (modules test_readme)
+ (libraries
+  ascetic_ddd.kms
+  ascetic_ddd.kms.pg
+  ascetic_ddd.session
+  ascetic_ddd.session.caqti
+  alcotest
+  caqti
+  caqti-eio
+  caqti-eio.unix
+  caqti-driver-postgresql
+  eio
+  eio_main
+  uri))
