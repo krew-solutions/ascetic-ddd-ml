@@ -30,7 +30,10 @@ of `cancel` does not change.
 
 1. **`Subscription.cancel` returns when no call of the handler is in
    flight.** It detaches the handler, once, and then waits, every time it is
-   called: a second cancel detaches nothing and waits like the first.
+   called: a second cancel detaches nothing and waits like the first, first
+   for the detaching to be over if another fiber is still at it, then for the
+   calls. A detaching that raises or is cut short has not detached, and the
+   next cancel runs it again.
 2. **From inside the handler it does not wait.** A handler may cancel its
    own subscription; the message in hand is its last. That a fiber is
    inside a call is told by a fiber-local mark, inherited by the fibers a
@@ -88,9 +91,28 @@ of `cancel` does not change.
    switch that is over is refused by Eio, and the call admitted for it is
    counted out before the exception goes on. Both are tested.
 
+6. *The argument for all this is prose, and prose is what got the inbox's
+   wait wrong once (ADR-0008).* So the protocol was modelled,
+   `verify/tla/Cancel.tla`, and the model found a flaw the prose and the
+   tests had passed: as first written, a cancel that found the detaching
+   taken by another went on at once to wait for the calls. While the first
+   canceller waited for the lock to detach under, the second found nothing
+   in flight and returned, and the handler, still attached, was called
+   after it. With the loop flavour there is no such window, its detaching
+   takes no lock; with the in-memory broker there is. The fix is the wait in
+   decision 1; the flaw stays in the model as a configuration TLC must
+   refute, beside three more: admitting outside the lock, registering a
+   waiter outside the lock of the count, which is the lost wake of ADR-0008
+   in another place, and no mark of being inside a call.
+
 ## Consequences
 
-- New tests: nine of `Handling`; three of the in-memory broker, the wait, a
+- The protocol is model-checked: five configurations of `Cancel.tla`, in
+  `check.sh`. There is no trace validation for it, which would take an
+  observer on every call of every handler; the model checks the design, and
+  tests hold the code to it, two of them written for the flaw above and
+  failing on the code as it was.
+- New tests: eleven of `Handling` and `Subscription`; three of the in-memory broker, the wait, a
   handler cancelling itself, an earlier subscription cancelled after a later
   one was made; one each of the outbox channel, the inbox channel and the
   Kafka adapter, where a cancel is shown to wait while the handler runs and

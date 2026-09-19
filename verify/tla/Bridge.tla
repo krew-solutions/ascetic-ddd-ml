@@ -1,7 +1,7 @@
 ----------------------------- MODULE Bridge -----------------------------
 (***************************************************************************)
-(* A Messaging Bridge from an outbox to an inbox, composed from the two    *)
-(* modules beside this one.                                                *)
+(* The Messaging Bridge of `lib/bus`, composed from the outbox and the     *)
+(* inbox of the two modules beside this one (ADR-0011).                    *)
 (*                                                                         *)
 (* A dispatcher of the source outbox hands each message to the bridge,     *)
 (* whose subscriber stores it in the destination inbox, in a transaction   *)

@@ -87,6 +87,50 @@ let test_a_call_that_raises_or_is_cancelled_is_in_flight_no_longer ~sw =
   Eio.Promise.await_exn cut_short;
   Handling.quiesce handling
 
+(* The detaching is one canceller's; another that finds it taken waits for it
+   to be over, and only then for the calls in flight. The detaching here
+   waits on a promise, as it would for a lock somebody holds. *)
+
+let test_a_second_cancel_waits_for_the_detaching_to_be_over ~sw =
+  let lock_is_free, free_the_lock = Eio.Promise.create () in
+  let log = ref [] in
+  let note what = log := what :: !log in
+  let subscription =
+    Subscription.make
+      ~quiesce:(fun () -> note "quiesced")
+      (fun () ->
+        note "detaching";
+        Eio.Promise.await lock_is_free;
+        note "detached")
+  in
+  let first = waiting ~sw (fun () -> Subscription.cancel subscription) in
+  let second = waiting ~sw (fun () -> Subscription.cancel subscription) in
+  Alcotest.(check (list string))
+    "the second neither detaches again nor goes on to wait for the calls" [ "detaching" ]
+    (List.rev !log);
+  Alcotest.(check bool) "neither has come back" false (first () || second ());
+  Eio.Promise.resolve free_the_lock ();
+  settle ();
+  Alcotest.(check (list string))
+    "both wait for the calls, after the handler is detached"
+    [ "detaching"; "detached"; "quiesced"; "quiesced" ]
+    (List.rev !log);
+  Alcotest.(check bool) "both have come back" true (first () && second ())
+
+let test_a_detaching_cut_short_is_tried_again ~sw:_ =
+  let attempts = ref 0 in
+  let subscription =
+    Subscription.make (fun () ->
+        incr attempts;
+        if !attempts = 1 then failwith "cut short")
+  in
+  (match Subscription.cancel subscription with
+  | () -> Alcotest.fail "the failure was swallowed"
+  | exception Failure _ -> ());
+  Subscription.cancel subscription;
+  Subscription.cancel subscription;
+  Alcotest.(check int) "run again, to its end, and no more" 2 !attempts
+
 (* A subscription served by a loop of its own. *)
 
 let test_cancelling_tells_the_loop_to_stop_and_waits_for_it ~sw =
@@ -165,6 +209,13 @@ let () =
           case "a call does not wait for itself" test_a_call_does_not_wait_for_itself;
           case "a call that raises or is cancelled is in flight no longer"
             test_a_call_that_raises_or_is_cancelled_is_in_flight_no_longer;
+        ] );
+      ( "detaching",
+        [
+          case "a second cancel waits for the detaching to be over"
+            test_a_second_cancel_waits_for_the_detaching_to_be_over;
+          case "a detaching cut short is tried again"
+            test_a_detaching_cut_short_is_tried_again;
         ] );
       ( "a loop of its own",
         [

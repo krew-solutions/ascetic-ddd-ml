@@ -164,3 +164,34 @@ if tlc -config BridgeAckFirst.cfg MCBridge.tla > "${TMPDIR:-/tmp}/tlc-bridge-ack
 fi
 grep -q "Temporal properties were violated" "${TMPDIR:-/tmp}/tlc-bridge-ackfirst.log"
 echo "   violation found, as expected"
+
+echo "== cancel: a subscription cancelled is a handler that is not running, every property holds"
+tlc -config Cancel.cfg Cancel.tla
+
+echo "== cancel: admitting a call outside the lock handlers are detached under, TLC must find a call after a cancel returned"
+if tlc -config CancelAdmitOutsideLock.cfg Cancel.tla > "${TMPDIR:-/tmp}/tlc-cancel-admit.log" 2>&1; then
+  echo "unexpected: no violation when admitting outside the lock"; exit 1
+fi
+grep -q "Invariant Quiet is violated" "${TMPDIR:-/tmp}/tlc-cancel-admit.log"
+echo "   violation found, as expected"
+
+echo "== cancel: without waiting for a detaching another has taken, TLC must find a cancel returned with the handler attached"
+if tlc -config CancelNoWaitForDetach.cfg Cancel.tla > "${TMPDIR:-/tmp}/tlc-cancel-detach.log" 2>&1; then
+  echo "unexpected: no violation without the wait for the detaching"; exit 1
+fi
+grep -q "Invariant Quiet is violated" "${TMPDIR:-/tmp}/tlc-cancel-detach.log"
+echo "   violation found, as expected"
+
+echo "== cancel: registering a waiter outside the lock of the count, TLC must find the wake lost"
+if tlc -config CancelRegisterOutsideLock.cfg Cancel.tla > "${TMPDIR:-/tmp}/tlc-cancel-register.log" 2>&1; then
+  echo "unexpected: no violation when registering outside the lock"; exit 1
+fi
+grep -q "Invariant NoLostWake is violated" "${TMPDIR:-/tmp}/tlc-cancel-register.log"
+echo "   violation found, as expected"
+
+echo "== cancel: without the mark of being inside a call, TLC must find a handler waiting for itself"
+if tlc -config CancelNoInsideMark.cfg Cancel.tla > "${TMPDIR:-/tmp}/tlc-cancel-inside.log" 2>&1; then
+  echo "unexpected: no violation without the mark"; exit 1
+fi
+grep -q "Temporal properties were violated" "${TMPDIR:-/tmp}/tlc-cancel-inside.log"
+echo "   violation found, as expected"

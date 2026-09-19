@@ -109,13 +109,15 @@ dune runtest
 ## Verification
 
 `verify/tla/` holds TLA+ models of the outbox and inbox protocols, of the
-inbox's statements against PostgreSQL under READ COMMITTED, and of the
-composition of the two through a bridge, checked with TLC: only committed
-messages are delivered, nothing is passed over, order per URI survives,
-effects happen exactly once and exactly when a message is marked, a message
-waits only for a dependency not yet processed, and every committed message
-is eventually processed end to end. Ten configurations are mutants that
-must fail, so the properties are known to bite. The test suites record what
+inbox's statements against PostgreSQL under READ COMMITTED, of the
+composition of the two through a bridge, and of the cancelling of a
+subscription of the bus, checked with TLC: only committed messages are
+delivered, nothing is passed over, order per URI survives, effects happen
+exactly once and exactly when a message is marked, a message waits only for
+a dependency not yet processed, every committed message is eventually
+processed end to end, and a subscription cancelled is a handler that is not
+running and will not be run. Fourteen configurations are mutants that must
+fail, so the properties are known to bite. The test suites record what
 their outbox and inbox reported as JSON lines, and `check.sh` replays every
 recorded run through the model: trace validation, the code following the
 protocol on the runs the tests exercise. See

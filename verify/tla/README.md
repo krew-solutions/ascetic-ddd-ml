@@ -1,7 +1,7 @@
 # Specifications
 
-TLA+ models of the protocols `lib/outbox` and `lib/inbox` implement, checked
-with TLC. A model describes the participants and their steps — transactions, dispatchers,
+TLA+ models of the protocols `lib/outbox`, `lib/inbox` and `lib/bus`
+implement, checked with TLC. A model describes the participants and their steps — transactions, dispatchers,
 workers, crashes, retries — and TLC explores every interleaving on a small
 instance, looking for a state that breaks a property. What is checked is the
 *protocol*, not the OCaml code: the gap between the two is closed by tests, and
@@ -235,6 +235,63 @@ that violation.
 
 The main configuration explores three quarters of a million states and takes
 a few minutes; the rest run in seconds.
+
+
+## Cancel — `Cancel.tla`
+
+The cancelling of a subscription of `lib/bus` (ADR-0016): a subscription
+cancelled is a handler that is not running and will not be run. A transport
+calls the handler from fibers of its own; a call is admitted, counted in
+flight, while the handler is attached, and counted out when the handler has
+returned. Cancelling detaches the handler, once, then waits until nothing is
+in flight; a handler may cancel its own subscription from inside a call, and
+then does not wait; several fibers may cancel at once. A step of the model
+is what `Subscription`, `Handling` and the in-memory broker do under one
+lock, or without giving way. The instance: two callers, two cancellers from
+outside, three calls attempted.
+
+| property | kind | meaning |
+| --- | --- | --- |
+| `CountIsOfCalls` | invariant | the count in flight is of the calls admitted and not yet counted out |
+| `Quiet` | invariant | once a cancel from outside has returned, no call is in flight, ever |
+| `NoLostWake` | invariant | whoever is registered to be woken has something to wait for |
+| `HandlerReturns` | liveness | a handler returns, one that cancels its own subscription included |
+| `CancelReturns` | liveness | a cancel returns, since handlers do |
+
+Four constants take one step apart each, as the implementation would be
+without the lock or the wait in question, and `check.sh` requires the
+violation of each:
+
+- `CancelAdmitOutsideLock.cfg`: whether the handler is attached is read, and
+  the call counted, in two steps. A cancel comes between the two, returns on
+  nothing in flight, and the call is made after it: `Quiet`.
+- `CancelNoWaitForDetach.cfg`: a cancel that finds the detaching taken by
+  another goes on at once to wait for the calls. This is `Subscription.cancel`
+  as it was first written, and the model was what found it: the first
+  canceller is still waiting for the lock to detach under, the second finds
+  nothing in flight and returns, and the handler, still attached, is called:
+  `Quiet`. The implementation now waits for the detaching to be over, and a
+  test holds it to that.
+- `CancelRegisterOutsideLock.cfg`: that something is in flight is read, and
+  the waiter registered, in two steps. The last call is counted out between
+  the two and wakes nobody: `NoLostWake`, the lost wake of ADR-0008 in another
+  place.
+- `CancelNoInsideMark.cfg`: a handler cancelling itself waits like anybody
+  else, for itself: `HandlerReturns`.
+
+A subscription served by a loop of its own, `Handling.loop`, which the outbox
+and the inbox channels and the Kafka adapter use, is the case of one call
+admitted before anybody can cancel, and a detaching that takes no lock.
+
+There is no trace validation here: it would take an observer on every call of
+every handler for the sake of the check alone. So this model checks the
+design, and the code is held to it by tests and by being sixty lines that
+follow it step for step. What Eio is assumed to do, that a fiber-local mark is
+inherited by forked fibers, that a call cut short by a cancellation is still
+counted out, that a loop cannot start on a switch that is over, is not in the
+model; tests cover it.
+
+The five configurations run in seconds.
 
 
 ## Trace validation — `TraceOutbox.tla`, `TraceInbox.tla`, `TraceBridge.tla`

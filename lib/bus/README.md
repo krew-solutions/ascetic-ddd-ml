@@ -59,7 +59,9 @@ may be taken down: that is what stopping in good order needs. A handler may
 cancel its own subscription; it does not wait for itself, and the message in
 hand is its last. A transport gets this from `Handling`, which counts a
 subscription's calls in flight: every adapter here makes its calls through
-it. A message a consumer cannot decode
+it. The protocol is model-checked, `verify/tla/Cancel.tla`, and the model
+earned its keep: it found a second cancel returning while the first was
+still detaching. A message a consumer cannot decode
 is reported and skipped: a poison message must not stop the rest.
 
 A message may go through *stages* between the typed layer and the
