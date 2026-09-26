@@ -1,3 +1,5 @@
+(include_subdirs unqualified)
+
 (library
  (name ascetic_specification)
  (public_name ascetic_ddd.specification)

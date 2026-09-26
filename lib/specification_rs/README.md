@@ -20,6 +20,10 @@ evaluator, the typed terms, the templates, the mapping and the PostgreSQL
 compiler, and depends on nothing; `ascetic_ddd.specification.caqti` sends a
 compiled query's parameters through Caqti; `ascetic_ddd.specification.ppx`
 is `let%specification`, a predicate function and its tree from one source.
+Inside the first, `domain/` is the specification itself - the tree, the
+values and the ways to build and to evaluate it, pure, with nothing of any
+storage - and `infrastructure/` is a specification on its way to a storage:
+the mapping and the compiler, as the reference lays them out.
 
 ## Four ways to write a specification
 
