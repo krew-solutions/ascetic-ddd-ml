@@ -17,5 +17,6 @@ module Aggregate_root = Aggregate_root
    [ascetic_ddd.bus], [ascetic_ddd.bus.in_memory], [ascetic_ddd.kms] with its
    [.pg] and [.vault] sub-libraries, [ascetic_ddd.dek] with its [.pg] and
    [.envelope] sub-libraries, [ascetic_ddd.saga], [ascetic_ddd.encryption],
-   [ascetic_ddd.spec], and [ascetic_ddd.gherkin] are exposed separately; add
+   [ascetic_ddd.specification] with its [.caqti] and [.ppx] sub-libraries, [ascetic_ddd.spec], and
+   [ascetic_ddd.gherkin] are exposed separately; add
    them to the [libraries] field of your dune file individually. *)

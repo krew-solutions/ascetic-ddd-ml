@@ -1,0 +1,6 @@
+(library
+ (name ascetic_specification_caqti)
+ (public_name ascetic_ddd.specification.caqti)
+ (libraries ascetic_ddd.specification caqti)
+ (preprocess
+  (pps ppx_deriving.show ppx_deriving.eq)))

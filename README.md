@@ -57,8 +57,17 @@ Domain-Driven Design in a functional style.
   See [`lib/dek/README.md`](./lib/dek/README.md).
 - **Saga** (`ascetic_ddd.saga`): routing-slip saga pattern for
   long-running workflows with compensation.
-- **Specification** (`ascetic_ddd.spec`): specification-pattern DSL with
-  parser, evaluator and SQL translator.
+- **Specification** (`ascetic_ddd.specification`, `.specification.caqti`,
+  `.specification.ppx`): the Specification pattern as a tree over values
+  with two readers that agree, an in-memory evaluator and a PostgreSQL
+  compiler - nulls, arithmetic, collections in arrays or in tables of their
+  own; built by hand, with typed terms, from a JSONPath template, or from an
+  OCaml predicate by `let%specification`; a mapping from the domain's names
+  and values to the storage's; the parameters to Caqti. See
+  [`lib/specification_rs/README.md`](./lib/specification_rs/README.md).
+- **Specification, the earlier design** (`ascetic_ddd.spec`): a DSL with
+  its own parser, evaluator and SQL translator; another design, kept until
+  its users move to `ascetic_ddd.specification`.
 - **Encryption** (`ascetic_ddd.encryption`): the earlier crypto-shredding
   primitives (KEK/DEK, forgettable payloads); `kms` and `dek` are their
   successors.

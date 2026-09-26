@@ -23,7 +23,7 @@
  (name ascetic_ddd)
  (synopsis "Reusable DDD building blocks for OCaml")
  (description
-  "A lightweight library providing foundational types and patterns for Domain-Driven Design in a functional style: bounded integers, decimals, entity IDs, clocks, domain events, aggregate roots, unit-of-work (with a Caqti-backed implementation) and its successor, a session with nested transaction scopes over PostgreSQL or an HTTP client, a transactional outbox and inbox on PostgreSQL over that session with a JSON trace recorder for checking test runs against the TLA+ models, a scheme-dispatched message bus with an in-memory adapter, key management for envelope encryption over PostgreSQL or HashiCorp Vault Transit, data-encryption keys per resource with a sealing stage for the bus, a specification DSL, GDPR-friendly encryption primitives, and a pure-OCaml Gherkin runner.")
+  "A lightweight library providing foundational types and patterns for Domain-Driven Design in a functional style: bounded integers, decimals, entity IDs, clocks, domain events, aggregate roots, unit-of-work (with a Caqti-backed implementation) and its successor, a session with nested transaction scopes over PostgreSQL or an HTTP client, a transactional outbox and inbox on PostgreSQL over that session with a JSON trace recorder for checking test runs against the TLA+ models, a scheme-dispatched message bus with an in-memory adapter, key management for envelope encryption over PostgreSQL or HashiCorp Vault Transit, data-encryption keys per resource with a sealing stage for the bus, the Specification pattern as a tree over values with an in-memory evaluator and a PostgreSQL compiler that agree, and its earlier DSL, GDPR-friendly encryption primitives, and a pure-OCaml Gherkin runner.")
  (depends
   (ocaml
    (>= 5.4.0))
@@ -59,6 +59,7 @@
   eqaf
   menhir
   ppx_deriving
+  ppxlib
   alcotest
   (mirage-crypto
    (>= 1.0))

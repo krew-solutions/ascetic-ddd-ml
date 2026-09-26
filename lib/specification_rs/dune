@@ -1,0 +1,5 @@
+(library
+ (name ascetic_specification)
+ (public_name ascetic_ddd.specification)
+ (preprocess
+  (pps ppx_deriving.show ppx_deriving.eq ppx_deriving.ord)))

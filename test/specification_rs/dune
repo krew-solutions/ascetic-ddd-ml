@@ -1,0 +1,34 @@
+(tests
+ (names test_specification test_dsl test_mapping test_jsonpath test_pg_compile)
+ (modules test_specification test_dsl test_mapping test_jsonpath test_pg_compile)
+ (libraries ascetic_ddd.specification alcotest unix)
+ (preprocess
+  (pps ppx_deriving.show ppx_deriving.eq)))
+
+(test
+ (name test_pg)
+ (modules test_pg)
+ (libraries
+  ascetic_ddd.specification
+  ascetic_ddd.specification.caqti
+  alcotest
+  caqti
+  caqti-eio
+  caqti-eio.unix
+  caqti-driver-postgresql
+  eio
+  eio_main
+  uri)
+ (preprocess
+  (pps ppx_deriving.show ppx_deriving.eq)))
+
+(test
+ (name test_ppx)
+ (modules test_ppx)
+ (libraries
+  ascetic_ddd.specification
+  ascetic_ddd.specification.ppx
+  ppxlib
+  alcotest)
+ (preprocess
+  (pps ascetic_ddd.specification.ppx ppx_deriving.show ppx_deriving.eq)))

@@ -1,0 +1,6 @@
+(library
+ (name ascetic_specification_ppx)
+ (public_name ascetic_ddd.specification.ppx)
+ (kind ppx_rewriter)
+ (libraries ppxlib)
+ (ppx_runtime_libraries ascetic_ddd.specification))
