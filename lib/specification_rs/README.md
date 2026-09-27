@@ -23,7 +23,10 @@ is `let%specification`, a predicate function and its tree from one source.
 Inside the first, `domain/` is the specification itself - the tree, the
 values and the ways to build and to evaluate it, pure, with nothing of any
 storage - and `infrastructure/` is a specification on its way to a storage:
-the mapping and the compiler, as the reference lays them out.
+the mapping, the compiler in `infrastructure/pg/`, and beside it, in
+`infrastructure/pg/caqti/`, the Caqti adapter as a library of its own, as
+the reference lays them out. The ppx is beside the library, as the
+reference's macro is a crate beside the crate.
 
 ## Four ways to write a specification
 
