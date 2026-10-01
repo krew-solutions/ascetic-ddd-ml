@@ -29,8 +29,9 @@ val text : Ascetic_specification.Value.t -> (string option, error) result
 (** How a value is written for the server: none for the null; a boolean as [true] or
     [false]; an integer as its digits; a float as seventeen significant digits, or [NaN],
     [Infinity], [-Infinity]; a text as it is; a point in time as
-    [YYYY-MM-DDTHH:MM:SS.ffffffZ], with [BC] after it before year 1; a span of time as
-    microseconds. *)
+    [YYYY-MM-DDTHH:MM:SS.ffffffZ], with [BC] after it before year 1, and a date as
+    [YYYY-MM-DD] likewise; a span of time as microseconds; a UUID in its canonical form.
+*)
 
 val of_values : Ascetic_specification.Value.t list -> (t, error) result
 (** The values as one parameter tuple, in order: [$1] is the first. *)

@@ -634,6 +634,28 @@ let a_tree_has_a_bound_on_its_depth () =
     "100 links" true
     (Result.is_ok (Template.parse (Printf.sprintf "$[?@.a%s]" (repeat " && @.a" 100))))
 
+(* A point in time, a date or a UUID in a template is a string, and is read as the kind
+   of the member beside it (ADR-0015 of the reference): a literal in either of RFC 9535's
+   quotes, and a bound parameter alike. *)
+let a_string_is_read_as_the_kind_of_the_member_beside_it () =
+  let today = Option.get (Value.Date.of_civil 2026 9 1) in
+  let row = Record.(to_context (object_ [ ("day", value (Value.Date today)) ])) in
+  List.iter
+    (fun (source, params, expected) ->
+      Alcotest.check matched source (Ok expected)
+        (Template.matches (template source) row params))
+    [
+      ("$[?@.day < '2026-09-02']", Params.none, true);
+      (* The date of a full timestamp: a midnight would be less than noon. *)
+      ("$[?@.day < '2026-09-01T12:00:00Z']", Params.none, false);
+      ({|$[?@.day == "2026-09-01T23:59:59+03:00"]|}, Params.none, true);
+      ("$[?@.day < %s]", Params.positional [ Value.Text "2026-09-02" ], true);
+    ];
+  Alcotest.(check bool)
+    "yesterday" true
+    (Result.is_error
+       (Template.matches (template "$[?@.day < 'yesterday']") row Params.none))
+
 let () =
   let case name f = Alcotest.test_case name `Quick f in
   Alcotest.run "jsonpath"
@@ -649,6 +671,8 @@ let () =
           case "parameters that do not fit are refused"
             parameters_that_do_not_fit_are_refused;
           case "literals" literals;
+          case "a string is read as the kind of the member beside it"
+            a_string_is_read_as_the_kind_of_the_member_beside_it;
           case "a null is tested, not compared" a_null_is_tested_not_compared;
           case "logical operators" logical_operators;
           case "and binds tighter than or and both nest to the left"

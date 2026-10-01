@@ -40,8 +40,10 @@ type number = [ `Number ]
 type text = [ `Text ]
 type datetime = [ `Datetime ]
 type timespan = [ `Timespan ]
+type date = [ `Date ]
+type uuid = [ `Uuid ]
 
-type comparable = [ number | text | datetime | timespan ]
+type comparable = [ number | text | datetime | date | timespan | uuid ]
 (** A sort whose values can be compared with each other. *)
 
 type negatable = [ number | timespan ]
@@ -238,4 +240,38 @@ module Null_timespan : sig
   val field : string -> t
   val field_at : Path.t -> t
   val value : Value.Interval.t option -> t
+end
+
+(** A calendar date. *)
+module Date : sig
+  type nonrec t = (date, not_null) t
+
+  val field : string -> t
+  val field_at : Path.t -> t
+  val value : Value.Date.t -> t
+end
+
+module Null_date : sig
+  type nonrec t = (date, nullable) t
+
+  val field : string -> t
+  val field_at : Path.t -> t
+  val value : Value.Date.t option -> t
+end
+
+(** A UUID. *)
+module Uuid : sig
+  type nonrec t = (uuid, not_null) t
+
+  val field : string -> t
+  val field_at : Path.t -> t
+  val value : Uuidm.t -> t
+end
+
+module Null_uuid : sig
+  type nonrec t = (uuid, nullable) t
+
+  val field : string -> t
+  val field_at : Path.t -> t
+  val value : Uuidm.t option -> t
 end

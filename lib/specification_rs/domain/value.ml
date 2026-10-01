@@ -8,6 +8,33 @@ end
 module Timestamp = Micros
 module Interval = Micros
 
+module Date = struct
+  type t = int [@@deriving show { with_path = false }, eq, ord]
+
+  let of_days days = days
+  let to_days days = days
+
+  let of_civil year month day =
+    Option.map
+      (fun midnight -> fst (Ptime.Span.to_d_ps (Ptime.to_span midnight)))
+      (Ptime.of_date (year, month, day))
+
+  (* The civil date of a day count from 1970-01-01: Howard Hinnant's algorithm, for a
+     calendar that the day may lie outside a calendar library's range of. *)
+  let to_civil days =
+    let days = days + 719_468 in
+    let era = (if days >= 0 then days else days - 146_096) / 146_097 in
+    let doe = days - (era * 146_097) in
+    let yoe = (doe - (doe / 1460) + (doe / 36_524) - (doe / 146_096)) / 365 in
+    let year = yoe + (era * 400) in
+    let doy = doe - ((365 * yoe) + (yoe / 4) - (yoe / 100)) in
+    let mp = ((5 * doy) + 2) / 153 in
+    let day = doy - (((153 * mp) + 2) / 5) + 1 in
+    let month = if mp < 10 then mp + 3 else mp - 9 in
+    let year = if month <= 2 then year + 1 else year in
+    (year, month, day)
+end
+
 type t =
   | Null
   | Bool of bool
@@ -15,7 +42,9 @@ type t =
   | Float of float
   | Text of string
   | Timestamp of Timestamp.t
+  | Date of Date.t
   | Interval of Interval.t
+  | Uuid of Uuidm.t
 [@@deriving show { with_path = false }, eq]
 
 let null = Null
@@ -34,7 +63,9 @@ let kind = function
   | Float _ -> "float"
   | Text _ -> "text"
   | Timestamp _ -> "timestamp"
+  | Date _ -> "date"
   | Interval _ -> "interval"
+  | Uuid _ -> "uuid"
 
 (* PostgreSQL's order of floats: [NaN] equals itself and is greater than everything
    else; [-0] equals [0]. *)
@@ -56,7 +87,10 @@ let compare left right =
   | Float left, Int right -> Ok (float_order left (Int64.to_float right))
   | Text left, Text right -> Ok (String.compare left right)
   | Timestamp left, Timestamp right -> Ok (Int64.compare left right)
+  | Date left, Date right -> Ok (Int.compare left right)
   | Interval left, Interval right -> Ok (Int64.compare left right)
+  (* By its bytes, as PostgreSQL orders a uuid. *)
+  | Uuid left, Uuid right -> Ok (Uuidm.compare left right)
   | _ ->
       Error
         (Operand.unsupported (Operator.comparison_to_string Lt) (kind left) (kind right))
@@ -186,3 +220,30 @@ let compute op left right =
   | None ->
       Error
         (Operand.unsupported (Operator.arithmetic_to_string op) (kind left) (kind right))
+
+(* ------------------------------------------------------------------------ *)
+(* Reading                                                                   *)
+
+let read_beside this other =
+  match this with
+  | Text text -> (
+      let unreadable form =
+        Error (Operand.Unreadable { text; kind = kind other; form })
+      in
+      let read parse wrap form =
+        match parse text with
+        | Some read -> Ok (Some (wrap read))
+        | None -> unreadable form
+      in
+      match other with
+      | Timestamp _ ->
+          read Reading.point_in_time
+            (fun micros -> Timestamp (Timestamp.of_micros micros))
+            Reading.point_in_time_form
+      | Date _ ->
+          read Reading.calendar_date
+            (fun days -> Date (Date.of_days days))
+            Reading.point_in_time_form
+      | Uuid _ -> read Reading.uuid (fun id -> Uuid id) Reading.uuid_form
+      | _ -> Ok None)
+  | _ -> Ok None

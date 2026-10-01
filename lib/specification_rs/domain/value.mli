@@ -26,6 +26,26 @@ module Timestamp : sig
   (** Microseconds since the Unix epoch. *)
 end
 
+(** A calendar date: days since the Unix epoch, PostgreSQL's [date]. As {!Timestamp}, a
+    type of the library's own: a date of any calendar library converts into it without
+    loss, and a [date] column is a date to the evaluator, not a midnight. *)
+module Date : sig
+  type t [@@deriving show, eq, ord]
+
+  val of_days : int -> t
+  (** The date [days] days after the Unix epoch. *)
+
+  val to_days : t -> int
+  (** Days since the Unix epoch. *)
+
+  val of_civil : int -> int -> int -> t option
+  (** [of_civil year month day], or [None] where the proleptic Gregorian calendar has no
+      such day, or the year is not of four digits. *)
+
+  val to_civil : t -> int * int * int
+  (** The year, month and day, in the proleptic Gregorian calendar. *)
+end
+
 (** A span of time, in microseconds: what two {!Timestamp.t}s differ by. *)
 module Interval : sig
   type t [@@deriving show, eq, ord]
@@ -48,7 +68,9 @@ type t =
   | Float of float  (** A float: PostgreSQL's [double precision]. *)
   | Text of string  (** A text. *)
   | Timestamp of Timestamp.t  (** A point in time. *)
+  | Date of Date.t  (** A calendar date. *)
   | Interval of Interval.t  (** A span of time. *)
+  | Uuid of Uuidm.t  (** A UUID. *)
 [@@deriving show, eq]
 
 include Operand.S with type t := t

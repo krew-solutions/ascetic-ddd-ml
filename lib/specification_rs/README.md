@@ -229,6 +229,10 @@ differential test holds them against the server as the reference's does:
   text, `$1::bigint + $2::bigint`; beside a column it is not, and the value
   adapts to the column. The one column that is cast is the count of a shift,
   `"a" << "b"::integer`.
+* A string constant beside a value of a kind that has no literal of its own -
+  a point in time, a date, a UUID - is read as that kind (ADR-0015), and a
+  date is a kind of its own, `Value.Date`, days since the Unix epoch as
+  `Timestamp` is microseconds.
 * Declared and never used in the sources, so not here: `IN`, `BETWEEN`,
   `ASC`, `DESC`, `PERIOD`; the collection "slice" other than `*`.
 
@@ -323,6 +327,16 @@ differential test holds them against the server as the reference's does:
   is `IS`, which a template cannot spell.
 * A control character stands in a string literal only as its escape, as RFC
   9535 has it; raw, it is a syntax error.
+* A string constant compared with a point in time, a date or a UUID is read
+  as one, as the server reads an untyped parameter by the column (ADR-0015 of
+  the reference): ISO 8601 - a date, or that with a time, a fraction and `Z`
+  or an offset, UTC without one - and the canonical UUID in either case; a
+  `Value.Date` takes the date of a full timestamp, as the server does. Caqti
+  hands the text to the server, which reads it by the column, so what the
+  server reads beyond the subset, `'yesterday'`, is an error in memory and a
+  row on the server - never the other way round. A `Timestamp` has no zone of
+  its own: a string beside a `timestamp` column without zone is read as one
+  with, and an offset is applied where the server would drop it.
 
 ## Tests
 

@@ -257,6 +257,10 @@ let a_constant_expression_has_one_value_for_both_readers conn =
             | Operand.Division_by_zero -> "22012"
             | Operand.Out_of_range -> "22003"
             | Operand.Unsupported _ -> "42883"
+            (* A string read as a point in time, a date or a UUID that is not one: the
+               server's words for the same. *)
+            | Operand.Unreadable { kind = "timestamp" | "date"; _ } -> "22007"
+            | Operand.Unreadable _ -> "22P02"
           in
           Alcotest.(check (option string))
             (Printf.sprintf "%s: %s" query.sql (Caqti_error.show error))
@@ -557,6 +561,14 @@ module Priced = struct
           (Operand.unsupported
              (Operator.arithmetic_to_string op)
              (kind left) (kind right))
+
+  (* A string beside a scalar is read as the scalar is; beside a discount it is a
+     string. *)
+  let read_beside this other =
+    match (this, other) with
+    | Scalar this, Scalar other ->
+        Result.map (Option.map (fun value -> Scalar value)) (Value.read_beside this other)
+    | _ -> Ok None
 end
 
 module Priced_evaluate = Evaluate.Make (Priced)
@@ -658,6 +670,7 @@ module Answering = struct
   let equals left right = Result.map (fun order -> order = 0) (compare left right)
   let negate = Priced.negate
   let compute = Priced.compute
+  let read_beside = Priced.read_beside
 end
 
 module Answering_evaluate = Evaluate.Make (Answering)
@@ -1076,6 +1089,82 @@ let the_item_of_an_enclosing_collection_is_named_from_an_inner_predicate conn =
         [ ("embedded", embedded, in_the_row); ("relational", relational, in_tables) ])
     specifications
 
+(* A point in time, a date or a UUID in a template is a string; the server reads it by
+   the column, and so does the evaluator now (ADR-0015 of the reference). A [Date] takes
+   the date of a full timestamp, as the server does; a [Timestamp] has no zone to drop,
+   so a [timestamp] column without zone would be read as one with. Caqti hands every
+   parameter to the server as a text, so a string beside a column is read by the server
+   as it is, and a date or a UUID of the domain goes as its text. *)
+let a_string_constant_is_read_as_the_kind_of_the_column_beside_it conn =
+  exec_all conn
+    [
+      "SET TIME ZONE 'UTC'";
+      "CREATE TEMP TABLE spec_kinds (id int8, at timestamptz, day date, uid uuid)";
+      "INSERT INTO spec_kinds VALUES (1, '2026-09-01 12:00:00+00', '2026-09-01', \
+       '3f2a0c1e-5b7d-4e8a-9f01-23456789abcd'), (2, '2026-09-02 12:00:00+00', \
+       '2026-09-02', '00000000-0000-0000-0000-000000000001')";
+    ];
+  let day d = Option.get (Value.Date.of_civil 2026 9 d) in
+  let at d hour =
+    Value.Timestamp
+      (Value.Timestamp.of_micros
+         (Int64.add
+            (Int64.mul (Int64.of_int (Value.Date.to_days (day d))) 86_400_000_000L)
+            (Int64.mul (Int64.of_int hour) 3_600_000_000L)))
+  in
+  let uuid text = Option.get (Uuidm.of_string text) in
+  let ann = uuid "3f2a0c1e-5b7d-4e8a-9f01-23456789abcd" in
+  let row d uid =
+    Record.(
+      to_context
+        (object_
+           [
+             ("at", value (at d 12));
+             ("day", value (Value.Date (day d)));
+             ("uid", value (Value.Uuid uid));
+           ]))
+  in
+  let rows =
+    [ (1L, row 1 ann); (2L, row 2 (uuid "00000000-0000-0000-0000-000000000001")) ]
+  in
+  List.iter
+    (fun (specification, expected) ->
+      let query = compiled specification in
+      let sql =
+        Printf.sprintf "SELECT id FROM spec_kinds WHERE %s ORDER BY id" query.sql
+      in
+      Alcotest.check int64s ("the evaluator: " ^ sql) expected
+        (satisfied E.is_satisfied_by specification rows);
+      Alcotest.check int64s sql expected (ids conn sql query.params))
+    [
+      (gt (field "at") (text "2026-09-01"), [ 1L; 2L ]);
+      (gt (field "at") (text "2026-09-01T12:00:00Z"), [ 2L ]);
+      (eq (field "at") (text "2026-09-01T15:00:00+03:00"), [ 1L ]);
+      (eq (field "at") (text "2026-09-01 12:00:00"), [ 1L ]);
+      (eq (field "at") (text "2026-09-01T12:00:00.000000Z"), [ 1L ]);
+      (eq (field "day") (text "2026-09-01"), [ 1L ]);
+      (lt (field "day") (text "2026-09-02"), [ 1L ]);
+      (* The date of a full timestamp: a midnight would be less than noon. *)
+      (lt (field "day") (text "2026-09-02T12:00:00Z"), [ 1L ]);
+      (eq (field "day") (text "2026-09-01T23:59:59+03:00"), [ 1L ]);
+      (eq (field "uid") (text "3F2A0C1E-5B7D-4E8A-9F01-23456789ABCD"), [ 1L ]);
+      (eq (text "2026-09-02") (field "day"), [ 2L ]);
+      (* A date and a UUID of the domain, written as their texts. *)
+      (eq (field "day") (value (Value.Date (day 2))), [ 2L ]);
+      (eq (field "uid") (value (Value.Uuid ann)), [ 1L ]);
+    ];
+  (* Beyond the subset the evaluator is loud, and the server reads: never the other way
+     round. *)
+  let beyond = gt (field "at") (text "yesterday") in
+  Alcotest.(check bool)
+    "'yesterday' in memory" true
+    (Result.is_error (E.is_satisfied_by beyond (snd (List.hd rows))));
+  let query = compiled beyond in
+  ignore
+    (ids conn
+       (Printf.sprintf "SELECT id FROM spec_kinds WHERE %s" query.sql)
+       query.params)
+
 let cases env uri =
   let case name f = Alcotest.test_case name `Quick (with_connection env uri f) in
   [
@@ -1101,6 +1190,8 @@ let cases env uri =
       a_value_is_read_as_the_type_the_server_asks_for_if_it_fits;
     case "the item of an enclosing collection is named from an inner predicate"
       the_item_of_an_enclosing_collection_is_named_from_an_inner_predicate;
+    case "a string constant is read as the kind of the column beside it"
+      a_string_constant_is_read_as_the_kind_of_the_column_beside_it;
   ]
 
 let () =

@@ -85,6 +85,25 @@ module Make (O : Operand.S) = struct
         Result.map_error (fun error -> Context error) (context.object_ name))
       (Ok root) (Path.objects path)
 
+  (* A string constant beside a value of a kind that has no literal of its own - a point
+     in time, a date, a UUID - is read as that kind, as the server reads an untyped
+     parameter by the column beside it. A constant of the tree, not a member's data: the
+     server refuses two columns of those types. Under a comparison or [IS] only: under
+     [+] the server reads the string as an interval, another reading. ADR-0015 of the
+     reference. *)
+  let read_constants left_expr right_expr left right =
+    let read expr this other =
+      match expr with
+      | Ast.Value _ ->
+          O.read_beside this other
+          |> Result.map (Option.value ~default:this)
+          |> Result.map_error (fun error -> Operand error)
+      | _ -> Ok this
+    in
+    let* left = read left_expr left right in
+    let* right = read right_expr right left in
+    Ok (left, right)
+
   let rec eval expr scope =
     match expr with
     | Ast.Value value -> Ok value
@@ -110,17 +129,19 @@ module Make (O : Operand.S) = struct
           truth right
         in
         Result.map of_truth (connective op left right)
-    | Infix (left, Is, right) ->
-        let* left = eval left scope in
-        let* right = eval right scope in
+    | Infix (left_expr, Is, right_expr) ->
+        let* left = eval left_expr scope in
+        let* right = eval right_expr scope in
+        let* left, right = read_constants left_expr right_expr left right in
         if O.is_null left || O.is_null right then
           Ok (O.of_bool (O.is_null left && O.is_null right))
         else
           O.equals left right |> Result.map O.of_bool
           |> Result.map_error (named (Operator.infix_to_string Is))
-    | Infix (left, Comparison op, right) ->
-        let* left = eval left scope in
-        let* right = eval right scope in
+    | Infix (left_expr, Comparison op, right_expr) ->
+        let* left = eval left_expr scope in
+        let* right = eval right_expr scope in
+        let* left, right = read_constants left_expr right_expr left right in
         strict left right (fun left right -> Result.map O.of_bool (compare left op right))
         |> Result.map_error (named (Operator.comparison_to_string op))
     | Infix (left, Arithmetic op, right) ->

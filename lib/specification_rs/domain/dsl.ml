@@ -3,7 +3,9 @@ type number = [ `Number ]
 type text = [ `Text ]
 type datetime = [ `Datetime ]
 type timespan = [ `Timespan ]
-type comparable = [ number | text | datetime | timespan ]
+type date = [ `Date ]
+type uuid = [ `Uuid ]
+type comparable = [ number | text | datetime | date | timespan | uuid ]
 type negatable = [ number | timespan ]
 type not_null
 type nullable
@@ -163,4 +165,40 @@ module Null_timespan = struct
   let field = field
   let field_at = field_at
   let value = Timespan.nullable
+end
+
+module Date = struct
+  type nonrec t = (date, not_null) t
+
+  include Sort (struct
+    type literal = Value.Date.t
+
+    let to_value v = Value.Date v
+  end)
+end
+
+module Null_date = struct
+  type nonrec t = (date, nullable) t
+
+  let field = field
+  let field_at = field_at
+  let value = Date.nullable
+end
+
+module Uuid = struct
+  type nonrec t = (uuid, not_null) t
+
+  include Sort (struct
+    type literal = Uuidm.t
+
+    let to_value v = Value.Uuid v
+  end)
+end
+
+module Null_uuid = struct
+  type nonrec t = (uuid, nullable) t
+
+  let field = field
+  let field_at = field_at
+  let value = Uuid.nullable
 end

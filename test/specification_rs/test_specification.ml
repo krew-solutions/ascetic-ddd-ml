@@ -510,6 +510,125 @@ let the_values_of_a_tree_can_be_mapped () =
   in
   Alcotest.(check (result int_tree string)) "refused" (Error "(Text \"x\")") refused
 
+(* A template has the literals of RFC 9535 and no others, so a point in time or a UUID in
+   it is a string. The server reads an untyped parameter by the column; the evaluator
+   compared a string with a point in time and refused, and the two readers parted on
+   [@.created_at > '2026-09-01']. A string constant beside a value of a kind that has no
+   literal of its own is read as that kind, within a subset of what the server reads
+   (ADR-0015 of the reference). The rows are in [test_pg]. *)
+let a_string_constant_is_read_as_the_kind_of_the_member_beside_it () =
+  let today = Option.get (Value.Date.of_civil 2026 9 1) in
+  let at hour =
+    Value.Timestamp
+      (Value.Timestamp.of_micros
+         (Int64.add
+            (Int64.mul (Int64.of_int (Value.Date.to_days today)) 86_400_000_000L)
+            (Int64.mul (Int64.of_int hour) 3_600_000_000L)))
+  in
+  let uid = Option.get (Uuidm.of_string "3f2a0c1e-5b7d-4e8a-9f01-23456789abcd") in
+  let row =
+    Record.(
+      to_context
+        (object_
+           [
+             ("at", value (at 12));
+             ("day", value (Value.Date today));
+             ("uid", value (Value.Uuid uid));
+             ("price", value (Value.of_int 100));
+             ("name", value (Value.Text "2026-09-01"));
+           ]))
+  in
+  let holds specification = E.is_satisfied_by specification row in
+  let at = field "at" and day = field "day" and uid = field "uid" in
+  check_each satisfied
+    (List.map
+       (fun (name, specification, expected) -> (name, holds specification, Ok expected))
+       [
+         (* Midnight, UTC without an offset; the forms of the subset. *)
+         ("a date alone", gt at (text "2026-09-01"), true);
+         ("Z", gt at (text "2026-09-01T12:00:00Z"), false);
+         ("a space for the T", gt at (text "2026-09-01 12:00:00"), false);
+         ("an offset", gt at (text "2026-09-01T15:00:00+03:00"), false);
+         ("no seconds", gt at (text "2026-09-01T12:00"), false);
+         ("a fraction", gt at (text "2026-09-01T11:59:59.999999Z"), true);
+         ("on either side", eq (text "2026-09-01T15:00:00+03:00") at, true);
+         ("under IS", is at (text "2026-09-01T12:00:00Z"), true);
+         (* A date takes the date of a full timestamp, as the server does: the time and
+            the offset are not looked at. *)
+         ("a date", eq day (text "2026-09-01"), true);
+         ("a date, ordered", lt day (text "2026-09-02"), true);
+         ("the date of a timestamp", lt day (text "2026-09-01T12:00:00Z"), false);
+         ("the date before the offset", eq day (text "2026-09-01T23:59:59+03:00"), true);
+         ( "a UUID in upper case",
+           eq uid (text "3F2A0C1E-5B7D-4E8A-9F01-23456789ABCD"),
+           true );
+         ("another UUID", ne uid (text "00000000-0000-0000-0000-000000000000"), true);
+         (* Two strings are two strings. *)
+         ("a string beside a string", eq (field "name") (text "2026-09-01"), true);
+       ]);
+  (* What the server reads beyond the subset, and what nothing reads: loud here, and never
+     the other way round. *)
+  let unreadable name specification =
+    match holds specification with
+    | Error (Evaluate.Operand (Operand.Unreadable _)) -> ()
+    | other -> Alcotest.failf "%s: %a" name (Alcotest.pp satisfied) other
+  in
+  List.iter
+    (fun text_ ->
+      List.iter (fun member -> unreadable text_ (gt member (text text_))) [ at; day ])
+    [
+      "yesterday";
+      "20260901";
+      "Sep 1 2026";
+      "2026-13-01";
+      "2026-09-01T25:00:00Z";
+      "2026-09-01T23:59:60Z";
+      "";
+    ];
+  List.iter
+    (fun text_ -> unreadable text_ (eq uid (text text_)))
+    [
+      "{3f2a0c1e-5b7d-4e8a-9f01-23456789abcd}";
+      "3f2a0c1e5b7d4e8a9f0123456789abcd";
+      "not-a-uuid";
+    ];
+  (* A number has a literal: a string beside it is meant, and does not compare. A member
+     holding a string is the candidate's data, not a constant. And [at + '1 day'] is an
+     interval to the server, another reading: here it is the error it was. *)
+  List.iter
+    (fun (name, specification) ->
+      match E.evaluate specification row with
+      | Error (Evaluate.Operand (Operand.Unsupported _)) -> ()
+      | other -> Alcotest.failf "%s: %a" name (Alcotest.pp evaluated) other)
+    [
+      ("a string beside a number", gt (field "price") (text "100"));
+      ("a member holding a string", gt (field "name") at);
+      ("added, not compared", add at (text "1 day"));
+    ]
+
+(* A date is days since the Unix epoch, as a point in time is microseconds: a civil date
+   converts to it, and the count is the one PostgreSQL's is taken from. *)
+let a_date_is_days_since_the_unix_epoch () =
+  let date = Alcotest.testable Value.Date.pp Value.Date.equal in
+  let days = Value.Date.of_days in
+  check_each
+    Alcotest.(option date)
+    [
+      ("1970-01-01", Value.Date.of_civil 1970 1 1, Some (days 0));
+      ("2000-01-01", Value.Date.of_civil 2000 1 1, Some (days 10_957));
+      ("1969-12-31", Value.Date.of_civil 1969 12 31, Some (days (-1)));
+      ("2024-02-29", Value.Date.of_civil 2024 2 29, Some (days 19_782));
+      ("2026-02-29", Value.Date.of_civil 2026 2 29, None);
+    ];
+  check_each
+    Alcotest.(triple int int int)
+    [
+      ("day 0", Value.Date.to_civil (days 0), (1970, 1, 1));
+      ("day 10957", Value.Date.to_civil (days 10_957), (2000, 1, 1));
+      ("day -1", Value.Date.to_civil (days (-1)), (1969, 12, 31));
+    ];
+  Alcotest.(check bool) "ordered" true (Value.Date.compare (days 1) (days 2) < 0)
+
 let () =
   let case name f = Alcotest.test_case name `Quick f in
   Alcotest.run "specification"
@@ -532,6 +651,9 @@ let () =
           case "an operator names itself and its operands when it does not apply"
             an_operator_names_itself_and_its_operands_when_it_does_not_apply;
           case "time" time;
+          case "a string constant is read as the kind of the member beside it"
+            a_string_constant_is_read_as_the_kind_of_the_member_beside_it;
+          case "a date is days since the Unix epoch" a_date_is_days_since_the_unix_epoch;
         ] );
       ( "nulls",
         [

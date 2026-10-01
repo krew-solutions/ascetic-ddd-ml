@@ -2,6 +2,7 @@ type error =
   | Unsupported of { operator : string; left : string; right : string option }
   | Division_by_zero
   | Out_of_range
+  | Unreadable of { text : string; kind : string; form : string }
 [@@deriving show { with_path = false }, eq]
 
 let unsupported operator left right = Unsupported { operator; left; right = Some right }
@@ -16,6 +17,8 @@ let error_to_string = function
       Printf.sprintf "operator \"%s\" is not supported for %s" operator left
   | Division_by_zero -> "division by zero"
   | Out_of_range -> "the result is out of range"
+  | Unreadable { text; kind; form } ->
+      Printf.sprintf "'%s' is not a %s: %s" text kind form
 
 module type S = sig
   type t
@@ -29,4 +32,5 @@ module type S = sig
   val compare : t -> t -> (int, error) result
   val negate : t -> (t, error) result
   val compute : Operator.arithmetic -> t -> t -> (t, error) result
+  val read_beside : t -> t -> (t option, error) result
 end

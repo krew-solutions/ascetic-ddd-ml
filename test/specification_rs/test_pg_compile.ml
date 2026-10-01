@@ -481,6 +481,20 @@ let a_constant_with_nothing_beside_it_has_its_type_said () =
       (mul (add (int 1) (int 2)) (int 3), "($1::bigint + $2::bigint) * $3");
       (* PostgreSQL shifts a bigint by an integer. *)
       (left_shift (int 1) (int 4), "$1::bigint << $2::integer");
+      (* A UUID and a date, which a template writes as strings and a constant of the
+         domain has as themselves. *)
+      ( eq
+          (value
+             (Value.Uuid
+                (Option.get (Uuidm.of_string "00000000-0000-0000-0000-000000000001"))))
+          (value
+             (Value.Uuid
+                (Option.get (Uuidm.of_string "00000000-0000-0000-0000-000000000002")))),
+        "$1::uuid = $2::uuid" );
+      ( eq
+          (value (Value.Date (Value.Date.of_days 0)))
+          (value (Value.Date (Value.Date.of_days 1))),
+        "$1::date = $2::date" );
       (* Alone under its operator. *)
       (neg (int 5), "-$1::bigint");
       (not_ (bool true), "NOT $1::boolean");

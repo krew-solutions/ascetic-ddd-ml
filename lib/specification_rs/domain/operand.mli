@@ -20,6 +20,9 @@ type error =
           kind of the left, or only, operand, and of the right one if there is one. *)
   | Division_by_zero  (** A division, or a remainder, by zero. *)
   | Out_of_range  (** The result does not fit the type. *)
+  | Unreadable of { text : string; kind : string; form : string }
+      (** A text beside a value of [kind] that is not of the [form] the kind is read in:
+          the text as it stands, the kind it was to be read as, and the form. *)
 [@@deriving show, eq]
 
 val unsupported : string -> string -> string -> error
@@ -62,4 +65,13 @@ module type S = sig
 
   val compute : Operator.arithmetic -> t -> t -> (t, error) result
   (** [compute op left right] is [left op right]. *)
+
+  val read_beside : t -> t -> (t option, error) result
+  (** [read_beside this other] is [this] read as the kind of [other], where [this] is a
+      text and [other] is of a kind that has no literal of its own - a point in time, a
+      date, a UUID - as the server reads an untyped parameter by the column beside it;
+      [None] where there is nothing to read, and an error where the text is not of the
+      form the kind is read in. The evaluator asks this of a constant of the tree under a
+      comparison, and of nothing else. A type of values with no such kinds answers
+      [Ok None]. ADR-0015 of the reference. *)
 end

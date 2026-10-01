@@ -46,7 +46,9 @@ module Of_value : S with type t = Value.t = struct
     | Float _ -> Some "double precision"
     | Text _ -> Some "text"
     | Timestamp _ -> Some "timestamptz"
+    | Date _ -> Some "date"
     | Interval _ -> Some "interval"
+    | Uuid _ -> Some "uuid"
 end
 
 let is_shift : Operator.infix -> bool = function
