@@ -1,2 +1,43 @@
+# Pinning the version makes formatting deterministic across machines.
+# Update when bumping the opam dep; check `ocamlformat --version`.
+version = 0.29.0
+
+# Community default profile (vs. janestreet / ocamlformat / conventional).
+# Closest to what the standard OCaml ecosystem uses.
 profile = default
+
+# Slightly wider than the historical 80 — modern editors handle it fine.
 margin = 90
+
+# Do NOT touch the contents of `(** ... *)` docstrings. The codebase
+# uses hand-aligned CLI help, ASCII tables and outcome matrices that
+# `parse-docstrings = true` would reflow to a single prose block.
+# We give up the {!ref}-link linter — broken refs surface at odoc
+# build time anyway, that's a fair trade.
+parse-docstrings = false
+
+# Do NOT reflow inline comment text — preserve hand-written line breaks
+# in `(* ... *)` blocks so Gospel-style `(*@ ... *)` annotations and
+# ASCII tables in comments survive untouched.
+wrap-comments = false
+
+# Sum-type / record cases break vertically when they don't fit.
+break-cases = fit-or-vertical
+
+# Function declarations: either all args on one line (short fns) or
+# each arg on its own line (long fns). No "fill the line then wrap"
+# middle ground — that produces hard-to-read 2-args-per-line clumps
+# for typical 5-7 arg domain functions.
+break-fun-decl = fit-or-vertical
+break-fun-sig = fit-or-vertical
+
+# Records / lists / arrays / tuples: same fit-or-vertical rule as
+# the function-shape options above. Already the default in ocamlformat
+# 0.29's default profile, but pinned explicitly so a future profile
+# change can't quietly switch us to `wrap`.
+break-collection-expressions = fit-or-vertical
+
+# Keep author-placed blank lines between top-level items — they
+# typically signal a logical grouping (e.g. "constructors" / "accessors"
+# blocks) we don't want collapsed.
+module-item-spacing = preserve
