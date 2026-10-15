@@ -65,6 +65,9 @@
    (>= 1.0))
   (mirage-crypto-rng
    (>= 1.0))
+  (mirage-crypto-ec
+   (>= 1.0))
+  digestif
   (cohttp-eio
    (and
     (>= 6.0)
@@ -72,6 +75,10 @@
   (qcheck
    (and
     (>= 0.21)
+    :with-test))
+  (x509
+   (and
+    (>= 1.0)
     :with-test)))
  (depopts kafka-eio cohttp-eio))
 

@@ -12,9 +12,9 @@
   eio_main
   yojson))
 
-(test
- (name test_vault)
- (modules test_vault)
+(tests
+ (names test_vault test_vault_signing)
+ (modules test_vault test_vault_signing)
  (enabled_if %{lib-available:cohttp-eio})
  (build_if %{lib-available:cohttp-eio})
  (libraries
@@ -24,7 +24,10 @@
   ascetic_ddd.session
   ascetic_ddd.session.rest
   alcotest
+  base64
   cohttp-eio
   eio
   eio_main
+  mirage-crypto-ec
+  x509
   yojson))

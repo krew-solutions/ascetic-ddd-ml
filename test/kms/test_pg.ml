@@ -17,6 +17,7 @@ let get what = function
 let key () = get "generate_key" (Algorithm.generate_key Algorithm.Aes_256_gcm)
 let error = Alcotest.testable Kms_error.pp Kms_error.equal
 let a_key = Alcotest.testable Key.pp Key.equal
+let a_version = Alcotest.testable Key_version.pp Key_version.equal
 let unwrapped = Alcotest.(result a_key error)
 
 let version_of wrapped =
@@ -34,6 +35,7 @@ type fixture = {
   sessions : Pool.t;
   kms : Pg_kms.t;
   table : string;
+  master : Key.t;
   clock : Eio.Time.Mono.ty Eio.Resource.t;
 }
 
@@ -61,20 +63,40 @@ let with_fixture ?master_key ~name env uri body =
     | Error err -> Alcotest.failf "connect_pool failed: %a" Caqti_error.pp err
   in
   let table = "kms_keys_" ^ name in
-  let master_key = match master_key with Some key -> key | None -> key () in
-  let kms = Pg_kms.create ~table:(Identifier.of_string_exn table) master_key in
+  let master_key =
+    match master_key with
+    | Some key -> key
+    | None -> key ()
+  in
+  let id = Identifier.of_string_exn in
+  let kms =
+    Pg_kms.create ~table:(id table)
+      ~signing_table:(id (table ^ "_s"))
+      ~mac_table:(id (table ^ "_m"))
+      master_key
+  in
   let f =
     {
       sessions;
       kms;
       table;
+      master = master_key;
       clock = (Eio.Stdenv.mono_clock env :> Eio.Time.Mono.ty Eio.Resource.t);
     }
   in
   with_session f (fun session ->
-      exec session (Printf.sprintf "DROP TABLE IF EXISTS %s" table);
+      exec session
+        (Printf.sprintf "DROP TABLE IF EXISTS %s, %s_s, %s_m" table table table);
       Pg_kms.setup kms session);
   body f
+
+(* Another instance of the fixture's service over the same tables. *)
+let instance ?derivation_context ?managed_keys f =
+  let id = Identifier.of_string_exn in
+  Pg_kms.create ~table:(id f.table)
+    ~signing_table:(id (f.table ^ "_s"))
+    ~mac_table:(id (f.table ^ "_m"))
+    ?derivation_context ?managed_keys f.master
 
 let versions_of f tenant_id =
   with_session f (fun session ->
@@ -371,8 +393,66 @@ let test_a_master_key_of_the_wrong_length_is_refused_at_first_use env uri =
   let outcome = atomic f (fun tx -> rotate f tx "1") in
   Alcotest.(check bool)
     "malformed" true
-    (match outcome with Error (Kms_error.Malformed _) -> true | _ -> false);
+    (match outcome with
+    | Error (Kms_error.Malformed _) -> true
+    | _ -> false);
   Alcotest.(check (list int)) "no rows" [] (versions_of f "1")
+
+(* The settings that serve the bus (ADR-0024). *)
+
+let test_managed_keys_are_not_made_on_first_contact env uri =
+  with_fixture ~name:"managed_keys" env uri @@ fun f ->
+  let managed = instance ~managed_keys:true f in
+  Alcotest.(check (result unit error))
+    "no key, and none made"
+    (Error (Kms_error.Kek_not_found { tenant_id = "1"; key_version = None }))
+    (Result.map ignore
+       (atomic f (fun tx -> Pg_kms.generate_dek managed tx ~tenant_id:"1")));
+  Alcotest.(check (list int)) "no rows" [] (versions_of f "1")
+
+let test_a_context_binds_the_wrap_to_its_channel env uri =
+  with_fixture ~name:"context" env uri @@ fun f ->
+  let lifecycle = instance ~derivation_context:"policy.lifecycle" f in
+  let command = instance ~derivation_context:"integration.command" f in
+  get "atomic"
+    (atomic f (fun tx ->
+         let* dek, wrapped = Pg_kms.generate_dek lifecycle tx ~tenant_id:"1" in
+         Alcotest.check unwrapped "another channel's instance" (Error Kms_error.Decrypt)
+           (Pg_kms.decrypt_dek command tx ~tenant_id:"1" wrapped);
+         Alcotest.check unwrapped "its own" (Ok dek)
+           (Pg_kms.decrypt_dek lifecycle tx ~tenant_id:"1" wrapped);
+         Ok ()))
+
+let test_custody_makes_the_key_once_and_retires_its_versions env uri =
+  with_fixture ~name:"custody" env uri @@ fun f ->
+  let versions = Alcotest.(result a_version error) in
+  get "atomic"
+    (atomic f (fun tx ->
+         let create options = Pg_kms.create_kek f.kms tx ~tenant_id:"1" options in
+         Alcotest.check versions "made" (Ok Key_version.first)
+           (create Kek_options.default);
+         Alcotest.check versions "left as it is" (Ok Key_version.first)
+           (create Kek_options.default);
+         Alcotest.(check bool)
+           "automatic rotation is refused, not ignored" true
+           (match
+              create { Kek_options.default with auto_rotate_period = Some 3600.0 }
+            with
+           | Error (Kms_error.Unsupported _) -> true
+           | _ -> false);
+         let* wrapped_v1 = Pg_kms.encrypt_dek f.kms tx ~tenant_id:"1" (key ()) in
+         Alcotest.check versions "rotated"
+           (Ok (Key_version.of_int_exn 2))
+           (rotate f tx "1");
+         let* () =
+           Pg_kms.retire_kek_versions_before f.kms tx ~tenant_id:"1"
+             (Key_version.of_int_exn 2)
+         in
+         Alcotest.check unwrapped "what the retired version wrapped is gone"
+           (Error (Kms_error.Kek_not_found { tenant_id = "1"; key_version = Some 1 }))
+           (Pg_kms.decrypt_dek f.kms tx ~tenant_id:"1" wrapped_v1);
+         Ok ()));
+  Alcotest.(check (list int)) "the current version alone" [ 2 ] (versions_of f "1")
 
 let cases env uri =
   let case name test = Alcotest.test_case name `Quick (fun () -> test env uri) in
@@ -403,6 +483,12 @@ let cases env uri =
     case "a key the python port wrote is read" test_a_key_the_python_port_wrote_is_read;
     case "a master key of the wrong length is refused at first use"
       test_a_master_key_of_the_wrong_length_is_refused_at_first_use;
+    case "managed keys are not made on first contact"
+      test_managed_keys_are_not_made_on_first_contact;
+    case "a context binds the wrap to its channel"
+      test_a_context_binds_the_wrap_to_its_channel;
+    case "custody makes the key once and retires its versions"
+      test_custody_makes_the_key_once_and_retires_its_versions;
   ]
 
 let () =

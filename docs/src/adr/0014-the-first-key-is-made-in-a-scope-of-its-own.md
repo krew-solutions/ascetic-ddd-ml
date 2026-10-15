@@ -90,8 +90,9 @@ key that exists, opens nothing.
   does.
 - The envelope stage needs nothing of the session but the pool: the scope is
   the adapter's.
-- The same change is proposed for the reference. By its source, a
-  deployment of it that seals through the stage can fail a publish, and the
-  command's transaction with it, when two commands meet a new tenant at
-  once; the command tried again goes through, the key being there by then.
-  That was read from the reference, not run on it.
+- The same change was proposed for the reference, and carried back on
+  2026-10-01: its adapters open the scope themselves now, and the race was
+  reproduced there on a warmed pool, two runs of nine failing before the
+  change and none of ten after, through the stage, eight messages of a new
+  tenant sealed at once. The READMEs of `kms` and `dek` no longer list the
+  scope among the deviations from the reference.

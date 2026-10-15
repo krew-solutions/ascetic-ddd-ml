@@ -64,8 +64,11 @@ module Consumer : sig
   (** Runs the handler for every message, with the transaction the message is acknowledged
       in, until the subscription is cancelled.
 
-      A message that [decode] rejects is reported and acknowledged without a handler, as
-      {!Consumer.subscribe} does: a poison message must not stop the rest. A stage that
-      fails on the way in fails the handling instead, so the message is kept and tried
-      again, or parked at once when the stage's verdict is permanent. *)
+      A message that [decode] rejects will not be read on a retry either: the handling
+      fails with {!Failure.Permanent}, and a transport that can act on the verdict, the
+      inbox, parks the message where an operator can see it, instead of acknowledging a
+      message no handler saw. The plain {!Consumer.subscribe} skips such a message, the
+      broker having nowhere to park it. A stage that fails on the way in fails the
+      handling likewise, so the message is kept and tried again, or parked at once when
+      the stage's verdict is permanent. *)
 end

@@ -43,18 +43,22 @@ Domain-Driven Design in a functional style.
   optional Kafka adapter on `kafka-eio`; the outbox and the inbox are
   channels of it. See [`lib/bus/README.md`](./lib/bus/README.md).
 - **KMS** (`ascetic_ddd.kms`, `.kms.pg`, `.kms.vault`,
-  `.kms.vault.cohttp`): key management for envelope encryption — a master
-  key over a tenant's versioned key-encryption keys, those over
-  data-encryption keys, AES-256-GCM with the tenant as associated data,
-  rotation, rewrapping, crypto-shredding; keys in a PostgreSQL table or in
-  HashiCorp Vault Transit behind one port, a cache in front of either. See
+  `.kms.vault.cohttp`): key management for a tenant's keys — a master key
+  over a tenant's versioned key-encryption keys, those over data-encryption
+  keys, AES-256-GCM with the tenant and, per channel of the bus, the
+  derivation context as associated data, rotation, rewrapping,
+  crypto-shredding; custody of the key apart from wrapping with it; digital
+  signatures and MACs under the tenant's keys; keys in PostgreSQL tables or
+  in HashiCorp Vault Transit behind four ports, a cache in front of either,
+  keys in memory for the tests of a consumer. See
   [`lib/kms/README.md`](./lib/kms/README.md).
 - **DEK** (`ascetic_ddd.dek`, `.dek.pg`, `.dek.envelope`): data-encryption
   keys per resource, versioned, wrapped through the KMS — a store on
-  PostgreSQL, ciphers that carry the key version along, and the envelope
-  stage of the bus, which seals a payload under a key of its own carried in
-  a header, so that the outbox and the inbox hold nothing but ciphertext.
-  See [`lib/dek/README.md`](./lib/dek/README.md).
+  PostgreSQL, ciphers that carry the key version along, the envelope stage
+  of the bus, which seals a payload under a key of its own carried in a
+  header, so that the outbox and the inbox hold nothing but ciphertext, and
+  the sealing of a service's channels, one stage per channel, chosen by the
+  row at an inbox of several. See [`lib/dek/README.md`](./lib/dek/README.md).
 - **Saga** (`ascetic_ddd.saga`): routing-slip saga pattern for
   long-running workflows with compensation.
 - **Specification** (`ascetic_ddd.specification`, `.specification.caqti`,
@@ -74,8 +78,38 @@ Domain-Driven Design in a functional style.
 - **Gherkin** (`ascetic_ddd.gherkin`): pure-OCaml `.feature` parser and
   step runner, built on `ocamllex`/`menhir`.
 
+## Decisions
+
 Architecture decisions that shape these blocks are recorded in
-[`docs/src/adr`](./docs/src/adr).
+[`docs/src/adr`](./docs/src/adr). Those taken first in the Rust reference
+implementation say so in their status; the rest are this port's own.
+
+- [ADR-0001](docs/src/adr/0001-serialize-and-encrypt-before-the-outbox.md) — a message is serialized and encrypted before the outbox; the tables hold bytes.
+- [ADR-0002](docs/src/adr/0002-structured-errors-in-the-messaging-ports.md) — the messaging ports return structured errors, the subscriber's own type among them.
+- [ADR-0003](docs/src/adr/0003-a-session-is-an-opaque-handle-with-one-operation.md) — a session is an opaque handle with one operation, `atomic`.
+- [ADR-0004](docs/src/adr/0004-a-failed-message-holds-its-slot-and-is-parked-after-its-attempts.md) — a failed message holds its slot, and is parked after its attempts.
+- [ADR-0005](docs/src/adr/0005-a-message-ahead-of-its-dependency-waits-out-of-the-queue.md) — a message ahead of its dependency waits out of the queue, woken by the dependency's mark *(the wait's transaction is amended by ADR-0008)*.
+- [ADR-0006](docs/src/adr/0006-a-dispatcher-owns-a-slot-by-locking-its-position.md) — an outbox dispatcher owns a slot by locking its position, and has no identity.
+- [ADR-0007](docs/src/adr/0007-the-inbox-takes-a-slot-by-locking-its-row.md) — the inbox takes a slot by locking its row *(the head's read is amended by ADR-0008)*.
+- [ADR-0008](docs/src/adr/0008-a-wait-is-a-transaction-of-its-own-under-a-lock-on-the-dependency.md) — a wait is a transaction of its own, serialized with the dependency's mark by a lock on its identity.
+- [ADR-0009](docs/src/adr/0009-which-failures-stop-the-loops-which-wait-and-which-park-at-once.md) — which failures stop the loops, which wait, and which park at once.
+- [ADR-0010](docs/src/adr/0010-the-bus-carries-wire-messages-and-its-errors-are-values.md) — the bus carries wire messages with a key and headers, and its errors are values.
+- [ADR-0011](docs/src/adr/0011-the-outbox-and-the-inbox-as-channels-of-the-bus.md) — the outbox and the inbox as channels of the bus, joined by bridges *(refined by ADR-0025)*.
+- [ADR-0012](docs/src/adr/0012-the-kafka-adapter-stands-on-kafka-eio.md) — the Kafka adapter stands on `kafka-eio`, and is optional.
+- [ADR-0013](docs/src/adr/0013-envelope-encryption-on-mirage-crypto-behind-signatures.md) — envelope encryption stands on `mirage-crypto`, behind signatures and functors.
+- [ADR-0014](docs/src/adr/0014-the-first-key-is-made-in-a-scope-of-its-own.md) — the first key is made in a scope of its own *(carried back to the reference)*.
+- [ADR-0015](docs/src/adr/0015-the-connection-pool-outlives-the-loops.md) — the connection pool outlives the loops that take sessions from it.
+- [ADR-0016](docs/src/adr/0016-a-subscription-cancelled-is-a-handler-that-is-not-running.md) — a subscription cancelled is a handler that is not running *(carried back to the reference)*.
+- [ADR-0017](docs/src/adr/0017-what-a-specification-must-do.md) — what a specification must do.
+- [ADR-0018](docs/src/adr/0018-a-specification-is-a-tree-over-its-values-read-by-functions.md) — a specification is a tree over its values, read by functions.
+- [ADR-0019](docs/src/adr/0019-a-null-is-tested-not-compared-where-null-is-a-value.md) — a null is tested, not compared, where null is a value.
+- [ADR-0020](docs/src/adr/0020-a-name-is-the-storages-quoted-as-it-is-and-mapped-in-one-place.md) — a name is the storage's, quoted as it is, and mapped in one place.
+- [ADR-0021](docs/src/adr/0021-a-parameter-goes-to-the-server-as-text-of-no-declared-type.md) — a parameter goes to the server as text of no declared type.
+- [ADR-0022](docs/src/adr/0022-a-predicate-function-yields-its-tree-through-a-ppx.md) — a predicate function yields its tree through a ppx.
+- [ADR-0023](docs/src/adr/0023-a-tenants-keys-are-one-per-use.md) — a tenant's keys are one per use: the KEK, a signing key per algorithm, a MAC key per purpose.
+- [ADR-0024](docs/src/adr/0024-the-bus-key-is-derived-per-channel-on-a-mount-of-its-own.md) — the bus's key is derived per channel on a mount of its own; the adapter makes no key, custody is a port beside, a refusal is read once.
+- [ADR-0025](docs/src/adr/0025-the-intake-names-the-row-and-the-stage-is-chosen-by-it.md) — the intake names the row, and at an inbox that receives several channels the stage is chosen by the row.
+- [ADR-0026](docs/src/adr/0026-a-string-constant-is-read-as-the-kind-of-the-member-beside-it.md) — a string constant is read as the kind of the member beside it, and a date is a kind of its own.
 
 ## Install
 

@@ -1,7 +1,8 @@
 (** The envelope stage on a PostgreSQL KMS: a message sealed on the way out opens on the
-    way in, only for its tenant; and end to end, the outbox and the inbox hold nothing but
-    ciphertext while the two ends see the clear. Needs a live database, named by
-    [TEST_DATABASE_URL], and is skipped without one. *)
+    way in, only for its tenant and only on its channel; end to end, the outbox and the
+    inbox hold nothing but ciphertext while the two ends see the clear; and the sealing of
+    a service's channels, with the stage an inbox of several channels chooses by the row.
+    Needs a live database, named by [TEST_DATABASE_URL], and is skipped without one. *)
 
 module Envelope = Ascetic_dek_envelope.Envelope_stage
 module Reuse = Ascetic_dek_envelope.Reuse
@@ -47,12 +48,25 @@ let connect ~sw env uri =
   | Ok pool -> Pool.of_pool pool
   | Error err -> Alcotest.failf "connect_pool failed: %a" Caqti_error.pp err
 
+(* The KMS of a table under a master key, as an instance serving a channel
+   of the bus when one is named: the context, and no key made on first
+   contact, which is custody's (ADR-0024). *)
+let kms_of ?derivation_context table master_key =
+  let id = Identifier.of_string_exn in
+  Pg_kms.create ~table:(id table)
+    ~signing_table:(id (table ^ "_s"))
+    ~mac_table:(id (table ^ "_m"))
+    ?derivation_context
+    ~managed_keys:(Option.is_some derivation_context)
+    master_key
+
 (* A KMS in a table of its own per test, set up afresh. *)
 let kms_in ?(master_key = master_key ()) sessions table =
-  let service = Pg_kms.create ~table:(Identifier.of_string_exn table) master_key in
+  let service = kms_of table master_key in
   kms "setup"
     (Pool.session sessions ~lift (fun session ->
-         exec session (Printf.sprintf "DROP TABLE IF EXISTS %s" table);
+         exec session
+           (Printf.sprintf "DROP TABLE IF EXISTS %s, %s_s, %s_m" table table table);
          Pg_kms.setup service session));
   service
 
@@ -450,6 +464,220 @@ let test_the_outbox_and_the_inbox_hold_nothing_but_ciphertext env uri =
   Subscription.cancel dispatcher;
   Subscription.cancel processing
 
+(* One stage serves one channel (ADR-0024), and the stage of an inbox that
+   receives several channels is chosen by the row (ADR-0025). *)
+
+module Channels = Ascetic_dek_envelope.Sealing.Make (Pool) (Pg_kms)
+
+let payload what = function
+  | Ok message -> Message.payload message
+  | Error failure -> Alcotest.failf "%s: %a" what Failure.pp failure
+
+let permanent_saying what ~sub = function
+  | Error failure ->
+      Alcotest.(check bool) (what ^ ": for good") true (Failure.is_permanent failure);
+      Alcotest.(check bool)
+        (what ^ ": the reason") true
+        (contains ~sub (Failure.message failure))
+  | Ok _ -> Alcotest.failf "%s: opened" what
+
+(* A table of KEKs with a key for [tenant-1] made by custody, for the stages
+   that make none themselves. *)
+let tenant_with_a_key sessions table =
+  let master = master_key () in
+  let custody = kms_in ~master_key:master sessions table in
+  ignore
+    (kms "create_kek"
+       (Pool.session sessions ~lift (fun session ->
+            Session.atomic session ~lift (fun tx ->
+                Pg_kms.create_kek custody tx ~tenant_id:"tenant-1"
+                  Ascetic_kms.Kek_options.default))));
+  master
+
+(* The stage of one channel over the table's KMS serving it as the context. *)
+let stage_of sessions table master context =
+  Sealing.stage
+    (Sealing.create sessions (kms_of ~derivation_context:context table master))
+
+(* The sealing of the channels, as a composition root builds it: the KMS of
+   the table under the master, an instance per channel serving the channel
+   as its context, making no key. *)
+let sealing_of env sessions table master channels =
+  Channels.create ~clock:(Eio.Stdenv.mono_clock env) sessions ~channels (fun channel ->
+      kms_of ~derivation_context:channel table master)
+
+let row_of sealed destination = Message.with_header sealed "destination" destination
+
+let test_the_channel_s_other_end_opens_what_was_sealed_for_it_and_no_other_channel_does
+    env
+    uri =
+  Eio.Switch.run @@ fun sw ->
+  let sessions = connect ~sw env uri in
+  let table = "ks_stage_channel" in
+  let master = tenant_with_a_key sessions table in
+  let producer = stage_of sessions table master "policy.lifecycle" in
+  let consumer = stage_of sessions table master "policy.lifecycle" in
+  let sealed =
+    passed "outbound" (producer.outbound (message "tenant-1" "a policy was created"))
+  in
+  Alcotest.(check string)
+    "opens at the other end" "a policy was created"
+    (payload "inbound" (consumer.inbound sealed));
+  (* Another channel's consumer, over the same key, is refused for good: the
+     DEK was drawn for the channel, and unwraps there and nowhere else. *)
+  let other = stage_of sessions table master "integration.command" in
+  Alcotest.(check bool)
+    "another channel is refused for good" true
+    (is_permanent (other.inbound sealed))
+
+let test_the_sealing_of_the_channels_is_built_up_front_and_answers_for_those_alone env uri
+    =
+  Eio.Switch.run @@ fun sw ->
+  let sessions = connect ~sw env uri in
+  let table = "ks_stage_sealing" in
+  let master = tenant_with_a_key sessions table in
+  (* The producer's sealing and the consumer's, built apart from one list. *)
+  let channels = [ "policy.lifecycle"; "integration.command" ] in
+  let producer = sealing_of env sessions table master channels in
+  let consumer = sealing_of env sessions table master channels in
+  Alcotest.(check (list string)) "the channels" channels (Channels.channels producer);
+  Alcotest.(check bool)
+    "a typo is no channel" true
+    (Option.is_none (Channels.of_channel producer "policy.lifecycl"));
+  let stage sealing channel = Option.get (Channels.of_channel sealing channel) in
+  let sealed =
+    passed "outbound"
+      ((stage producer "policy.lifecycle").outbound
+         (message "tenant-1" "a policy was created"))
+  in
+  Alcotest.(check string)
+    "opens" "a policy was created"
+    (payload "inbound" ((stage consumer "policy.lifecycle").inbound sealed));
+  (* The other channel's stage, over the same key, is refused for good. *)
+  Alcotest.(check bool)
+    "the other channel refuses for good" true
+    (is_permanent ((stage consumer "integration.command").inbound sealed))
+
+let by_destination sealing map =
+  match Channels.by_destination sealing map with
+  | Ok stage -> stage
+  | Error unsealed ->
+      Alcotest.failf "by_destination: %a" Ascetic_dek_envelope.Sealing.pp_unsealed_channel
+        unsealed
+
+(* One inbox receives two channels; one stage, chosen by the row's
+   destination, opens each row with the stage of the channel it was sealed
+   under, and the key after the destination is left aside. *)
+let test_one_stage_opens_the_rows_of_two_channels_by_their_destination env uri =
+  Eio.Switch.run @@ fun sw ->
+  let sessions = connect ~sw env uri in
+  let table = "ks_stage_bydest" in
+  let master = tenant_with_a_key sessions table in
+  let channels = [ "device.lifecycle"; "inbox://policy-commands" ] in
+  let producers = sealing_of env sessions table master channels in
+  let consumer =
+    by_destination
+      (sealing_of env sessions table master channels)
+      [
+        ("inbox://device.lifecycle", "device.lifecycle");
+        ("inbox://policy-commands", "inbox://policy-commands");
+      ]
+  in
+  Alcotest.(check (list string))
+    "the destinations, keys left aside"
+    [ "inbox://device.lifecycle"; "inbox://policy-commands" ]
+    (List.sort compare
+       (Ascetic_dek_envelope.Sealing.By_destination.destinations consumer));
+  let stage = Ascetic_dek_envelope.Sealing.By_destination.stage consumer in
+  let sealed_by channel id text =
+    passed "outbound"
+      ((Option.get (Channels.of_channel producers channel)).outbound
+         (identified "tenant-1" id text))
+  in
+  let managed =
+    sealed_by "device.lifecycle" "00000000-0000-4000-8000-000000000011" "device managed"
+  in
+  let resolve =
+    sealed_by "inbox://policy-commands" "00000000-0000-4000-8000-000000000012"
+      "resolve bundle"
+  in
+  Alcotest.(check string)
+    "the device's row" "device managed"
+    (payload "inbound"
+       (stage.inbound (row_of managed "inbox://device.lifecycle/tenant-1")));
+  Alcotest.(check string)
+    "the command's row" "resolve bundle"
+    (payload "inbound"
+       (stage.inbound (row_of resolve "inbox://policy-commands/tenant-1")))
+
+(* A row sealed under one channel but named for another's destination is
+   opened with the other's stage and does not open: the binding is the
+   channel's, and the verdict is for good. *)
+let test_a_row_under_another_channel_s_destination_does_not_open env uri =
+  Eio.Switch.run @@ fun sw ->
+  let sessions = connect ~sw env uri in
+  let table = "ks_stage_bydest_other" in
+  let master = tenant_with_a_key sessions table in
+  let channels = [ "device.lifecycle"; "inbox://policy-commands" ] in
+  let producers = sealing_of env sessions table master channels in
+  let consumer =
+    by_destination
+      (sealing_of env sessions table master channels)
+      [
+        ("inbox://device.lifecycle", "device.lifecycle");
+        ("inbox://policy-commands", "inbox://policy-commands");
+      ]
+  in
+  let managed =
+    passed "outbound"
+      ((Option.get (Channels.of_channel producers "device.lifecycle")).outbound
+         (identified "tenant-1" "00000000-0000-4000-8000-000000000013" "device managed"))
+  in
+  Alcotest.(check bool)
+    "another channel's stage refuses for good" true
+    (is_permanent
+       ((Ascetic_dek_envelope.Sealing.By_destination.stage consumer).inbound
+          (row_of managed "inbox://policy-commands/tenant-1")))
+
+(* A row whose destination the stage was not built for, or without one, is
+   refused for good before any stage, and so before any KMS, is asked. *)
+let test_a_destination_outside_the_map_is_refused_for_good env uri =
+  Eio.Switch.run @@ fun sw ->
+  let sessions = connect ~sw env uri in
+  let table = "ks_stage_bydest_outside" in
+  let master = tenant_with_a_key sessions table in
+  let sealing = sealing_of env sessions table master [ "device.lifecycle" ] in
+  let consumer =
+    Ascetic_dek_envelope.Sealing.By_destination.stage
+      (by_destination sealing [ ("inbox://device.lifecycle", "device.lifecycle") ])
+  in
+  let sealed =
+    passed "outbound"
+      ((Option.get (Channels.of_channel sealing "device.lifecycle")).outbound
+         (identified "tenant-1" "00000000-0000-4000-8000-000000000014" "device managed"))
+  in
+  permanent_saying "outside the map" ~sub:"no stage for the destination"
+    (consumer.inbound (row_of sealed "inbox://telemetry.semantic/tenant-1"));
+  permanent_saying "no destination" ~sub:"no `destination` header"
+    (consumer.inbound sealed)
+
+(* A map naming a channel the sealing was not built for is refused at
+   construction, before any row arrives. *)
+let test_a_map_naming_a_channel_the_sealing_lacks_is_refused_up_front env uri =
+  Eio.Switch.run @@ fun sw ->
+  let sessions = connect ~sw env uri in
+  let table = "ks_stage_bydest_lacking" in
+  let master = tenant_with_a_key sessions table in
+  let sealing = sealing_of env sessions table master [ "device.lifecycle" ] in
+  match
+    Channels.by_destination sealing
+      [ ("inbox://telemetry.semantic", "telemetry.semantic") ]
+  with
+  | Ok _ -> Alcotest.fail "built for a channel the sealing lacks"
+  | Error { destination; channel } ->
+      Alcotest.(check string) "the channel" "telemetry.semantic" channel;
+      Alcotest.(check string) "the destination" "inbox://telemetry.semantic" destination
+
 let cases env uri =
   let case name test = Alcotest.test_case name `Quick (fun () -> test env uri) in
   [
@@ -473,6 +701,18 @@ let cases env uri =
       test_a_kms_out_of_reach_is_a_failure_of_the_moment;
     case "the outbox and the inbox hold nothing but ciphertext"
       test_the_outbox_and_the_inbox_hold_nothing_but_ciphertext;
+    case "the channel's other end opens what was sealed for it and no other channel does"
+      test_the_channel_s_other_end_opens_what_was_sealed_for_it_and_no_other_channel_does;
+    case "the sealing of the channels is built up front and answers for those alone"
+      test_the_sealing_of_the_channels_is_built_up_front_and_answers_for_those_alone;
+    case "one stage opens the rows of two channels by their destination"
+      test_one_stage_opens_the_rows_of_two_channels_by_their_destination;
+    case "a row under another channel's destination does not open"
+      test_a_row_under_another_channel_s_destination_does_not_open;
+    case "a destination outside the map is refused for good"
+      test_a_destination_outside_the_map_is_refused_for_good;
+    case "a map naming a channel the sealing lacks is refused up front"
+      test_a_map_naming_a_channel_the_sealing_lacks_is_refused_up_front;
   ]
 
 let () =

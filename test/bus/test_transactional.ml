@@ -38,8 +38,13 @@ let test_the_handler_gets_the_transaction_with_the_decoded_value () =
     Alcotest.(check bool) tx true (Result.is_ok (handler tx (Message.make payload)))
   in
   handled "tx-1" "7";
-  (* undecodable: reported and acknowledged, not an error of the transport *)
-  handled "tx-2" "not a number";
+  (* undecodable: a permanent verdict, for the inbox to park it, never an
+     acknowledgement of a message no handler saw *)
+  (match handler "tx-2" (Message.make "not a number") with
+  | Error (Failure.Permanent reason) ->
+      Alcotest.(check string) "the decoder's reason" "not a number" reason
+  | Error (Failure.Transient reason) -> Alcotest.failf "transient: %s" reason
+  | Ok () -> Alcotest.fail "acknowledged");
   handled "tx-3" "8";
   Alcotest.(check (list (pair string int)))
     "each in its transaction"

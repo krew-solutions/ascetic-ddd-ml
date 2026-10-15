@@ -1,5 +1,6 @@
 (** The model, without a service: the master key over KEKs, a KEK over DEKs, the wire form
-    of a wrapped key, and what the Python port wrapped. *)
+    of a wrapped key, the signing and MAC keys beside the KEK, a KEK serving a derivation
+    context, and what the Python port wrapped. *)
 
 open Ascetic_kms
 
@@ -169,7 +170,9 @@ let test_keks_of_two_tenants_do_not_unwrap_each_other_s () =
 
 (* The edges. *)
 
-let is_malformed = function Error (Kms_error.Malformed _) -> true | _ -> false
+let is_malformed = function
+  | Error (Kms_error.Malformed _) -> true
+  | _ -> false
 
 let test_a_master_key_of_the_wrong_length_is_refused () =
   Alcotest.(check bool)
@@ -212,6 +215,182 @@ let test_a_kek_never_shows_its_key () =
   Alcotest.(check string)
     "the master key" "Master_key(AES-256-GCM)"
     (Format.asprintf "%a" Master_key.pp master)
+
+(* The signing and MAC keys, beside the KEK. *)
+
+let a_signature = Alcotest.testable Signature.pp Signature.equal
+let a_mac = Alcotest.testable Mac.pp Mac.equal
+let a_public = Alcotest.testable Public_key.pp Public_key.equal
+let verified = Alcotest.(result unit error)
+let ed25519 = Signature_algorithm.Ed25519
+let p256 = Signature_algorithm.Ecdsa_p256
+
+let test_an_algorithm_reads_back_from_its_id () =
+  List.iter
+    (fun algorithm ->
+      Alcotest.(check bool)
+        (Signature_algorithm.to_string algorithm)
+        true
+        (Signature_algorithm.of_string (Signature_algorithm.to_string algorithm)
+        = Some algorithm))
+    Signature_algorithm.all;
+  Alcotest.(check bool) "rsa-2048" true (Signature_algorithm.of_string "rsa-2048" = None)
+
+let test_a_label_is_one_key_part () =
+  Alcotest.(check (result string error))
+    "draft-etag" (Ok "draft-etag")
+    (Result.map Key_label.to_string (Key_label.make "draft-etag"));
+  List.iter
+    (fun bad ->
+      Alcotest.(check bool)
+        (Printf.sprintf "%S" bad) true
+        (is_malformed (Key_label.make bad)))
+    [ ""; "a.b"; "a/b"; "a b"; String.make 65 'x' ]
+
+let test_each_algorithm_signs_in_its_form_and_verifies () =
+  List.iter
+    (fun (algorithm, public_length) ->
+      let name = Signature_algorithm.to_string algorithm in
+      let key =
+        get "generate" (Signing_key.generate ~tenant_id:"t" ~algorithm ~version:(v 3))
+      in
+      Alcotest.(check int)
+        (name ^ ": the public half's length")
+        public_length
+        (String.length (Public_key.to_string (Signing_key.public key)));
+      let signature = Signing_key.sign key "hello" in
+      Alcotest.(check bool)
+        "of the algorithm" true
+        (Signature_algorithm.equal (Signature.algorithm signature) algorithm);
+      Alcotest.check a_version "of the version" (v 3) (Signature.key_version signature);
+      Alcotest.(check int)
+        (name ^ ": sixty-four bytes") 64
+        (String.length (Signature.to_string signature));
+      Alcotest.check verified "verifies" (Ok ())
+        (Public_key.verify (Signing_key.public key) "hello" signature);
+      Alcotest.check verified "another message" (Error Kms_error.Invalid_signature)
+        (Public_key.verify (Signing_key.public key) "hellp" signature);
+      let other =
+        get "generate" (Signing_key.generate ~tenant_id:"t" ~algorithm ~version:(v 3))
+      in
+      Alcotest.check verified "another key" (Error Kms_error.Invalid_signature)
+        (Public_key.verify (Signing_key.public other) "hello" signature))
+    [ (ed25519, 32); (p256, 65) ]
+
+let test_a_seed_makes_the_same_key_and_a_loaded_half_derives_the_same_public () =
+  List.iter
+    (fun algorithm ->
+      let seed = String.make 32 '\007' in
+      let a =
+        get "of_seed" (Signing_key.of_seed ~tenant_id:"t" ~algorithm ~version:(v 1) seed)
+      in
+      let b =
+        get "of_seed" (Signing_key.of_seed ~tenant_id:"t" ~algorithm ~version:(v 1) seed)
+      in
+      Alcotest.check a_public "the same public half" (Signing_key.public a)
+        (Signing_key.public b);
+      Alcotest.check a_signature "the same signature" (Signing_key.sign a "x")
+        (Signing_key.sign b "x");
+      let loaded =
+        get "load"
+          (Signing_key.load ~tenant_id:"t" ~algorithm ~version:(v 1)
+             (Signing_key.private_key a))
+      in
+      Alcotest.check a_public "derived again" (Signing_key.public a)
+        (Signing_key.public loaded);
+      Alcotest.(check string)
+        "the name"
+        ("t.sign." ^ Signature_algorithm.to_string algorithm)
+        (Signing_key.name a))
+    Signature_algorithm.all
+
+let test_a_public_key_is_checked_and_a_signature_of_another_algorithm_is_not_its () =
+  Alcotest.(check bool)
+    "thirty-one bytes are no Ed25519 key" true
+    (is_malformed (Public_key.make ed25519 (String.make 31 '\000')));
+  Alcotest.(check bool)
+    "sixty-five zero bytes are no P-256 point" true
+    (is_malformed (Public_key.make p256 (String.make 65 '\000')));
+  let ed =
+    get "generate" (Signing_key.generate ~tenant_id:"t" ~algorithm:ed25519 ~version:(v 1))
+  in
+  let p =
+    get "generate" (Signing_key.generate ~tenant_id:"t" ~algorithm:p256 ~version:(v 1))
+  in
+  let signature = Signing_key.sign p "hello" in
+  Alcotest.check verified "another algorithm" (Error Kms_error.Invalid_signature)
+    (Public_key.verify (Signing_key.public ed) "hello" signature);
+  let again =
+    get "make" (Public_key.make p256 (Public_key.to_string (Signing_key.public p)))
+  in
+  Alcotest.check verified "the public bytes read back verify" (Ok ())
+    (Public_key.verify again "hello" signature)
+
+let test_a_private_half_that_is_no_key_of_the_algorithm_is_refused () =
+  Alcotest.(check bool)
+    "a P-256 scalar of zero" true
+    (is_malformed
+       (Signing_key.of_seed ~tenant_id:"t" ~algorithm:p256 ~version:(v 1)
+          (String.make 32 '\000')));
+  Alcotest.(check bool)
+    "thirty-one bytes for Ed25519" true
+    (is_malformed
+       (Signing_key.of_seed ~tenant_id:"t" ~algorithm:ed25519 ~version:(v 1)
+          (String.make 31 '\001')))
+
+let test_a_mac_is_thirty_two_bytes_of_this_version_and_a_function_of_key_and_message () =
+  let purpose = get "label" (Key_label.make "etag") in
+  let key = get "generate" (Mac_key.generate ~tenant_id:"t" ~purpose ~version:(v 2)) in
+  let first = Mac_key.mac key "hello" in
+  Alcotest.check a_version "of the version" (v 2) (Mac.key_version first);
+  Alcotest.(check int) "thirty-two bytes" 32 (String.length (Mac.to_string first));
+  Alcotest.check a_mac "the same again" first (Mac_key.mac key "hello");
+  Alcotest.(check bool)
+    "another message" false
+    (Mac.equal first (Mac_key.mac key "hellp"));
+  let other = get "generate" (Mac_key.generate ~tenant_id:"t" ~purpose ~version:(v 2)) in
+  Alcotest.(check bool) "another key" false (Mac.equal first (Mac_key.mac other "hello"));
+  let loaded = Mac_key.load ~tenant_id:"t" ~purpose ~version:(v 2) (Mac_key.key key) in
+  Alcotest.check a_mac "loaded" first (Mac_key.mac loaded "hello");
+  Alcotest.(check string) "the name" "t.mac.etag" (Mac_key.name key)
+
+(* A KEK serving a derivation context. *)
+
+let test_a_kek_serving_a_context_binds_what_it_wraps_to_it () =
+  let master = master (key ()) in
+  let lifecycle =
+    get "generate_kek"
+      (Master_key.generate_kek ~context:"policy.lifecycle" master ~tenant_id:"tenant-1")
+  in
+  Alcotest.(check (option string))
+    "the context" (Some "policy.lifecycle") (Kek.context lifecycle);
+  let dek = key () in
+  let wrapped = get "wrap" (Kek.wrap lifecycle dek) in
+  Alcotest.check unwrapped "its own" (Ok dek) (Kek.unwrap lifecycle wrapped);
+  (* The same key bytes, loaded for another context or for none, do not open
+     it: the binding is the wrap's associated data. *)
+  let load ?context () =
+    get "load_kek"
+      (Master_key.load_kek ?context master ~tenant_id:"tenant-1" ~version:(v 1)
+         ~algorithm:Algorithm.Aes_256_gcm (Kek.wrapped lifecycle))
+  in
+  Alcotest.check unwrapped "another context" (Error Kms_error.Decrypt)
+    (Kek.unwrap (load ~context:"integration.command" ()) wrapped);
+  Alcotest.check unwrapped "no context" (Error Kms_error.Decrypt)
+    (Kek.unwrap (load ()) wrapped);
+  let rotated = get "rotate_kek" (Master_key.rotate_kek master lifecycle) in
+  Alcotest.(check (option string))
+    "a rotation keeps the context" (Some "policy.lifecycle") (Kek.context rotated);
+  Alcotest.(check string)
+    "and says so"
+    "Kek(tenant `tenant-1`, context `policy.lifecycle`, version 2, AES-256-GCM)"
+    (Format.asprintf "%a" Kek.pp rotated)
+
+let test_the_binding_is_the_tenant_length_prefixed_then_the_context () =
+  Alcotest.(check string) "no context" "tenant-1" (Kek.binding ~tenant_id:"tenant-1" None);
+  Alcotest.(check string)
+    "a context" "\000\000\000\008tenant-1policy.lifecycle"
+    (Kek.binding ~tenant_id:"tenant-1" (Some "policy.lifecycle"))
 
 (* Made by the Python port's [MasterKey] and [Kek] with the master key [00 01 .. 1f] for
    [tenant-1]: the first KEK, its rotation, and one DEK, [40 41 .. 5f], wrapped under
@@ -298,6 +477,30 @@ let () =
             test_bytes_too_short_to_name_a_version_are_refused;
           case "a version is what four bytes hold" test_a_version_is_what_four_bytes_hold;
           case "a kek never shows its key" test_a_kek_never_shows_its_key;
+        ] );
+      ( "the signing and MAC keys",
+        [
+          case "an algorithm reads back from its id"
+            test_an_algorithm_reads_back_from_its_id;
+          case "a label is one key part" test_a_label_is_one_key_part;
+          case "each algorithm signs in its form and verifies"
+            test_each_algorithm_signs_in_its_form_and_verifies;
+          case "a seed makes the same key and a loaded half derives the same public"
+            test_a_seed_makes_the_same_key_and_a_loaded_half_derives_the_same_public;
+          case "a public key is checked and a signature of another algorithm is not its"
+            test_a_public_key_is_checked_and_a_signature_of_another_algorithm_is_not_its;
+          case "a private half that is no key of the algorithm is refused"
+            test_a_private_half_that_is_no_key_of_the_algorithm_is_refused;
+          case
+            "a mac is thirty-two bytes of this version and a function of key and message"
+            test_a_mac_is_thirty_two_bytes_of_this_version_and_a_function_of_key_and_message;
+        ] );
+      ( "a kek serving a context",
+        [
+          case "a kek serving a context binds what it wraps to it"
+            test_a_kek_serving_a_context_binds_what_it_wraps_to_it;
+          case "the binding is the tenant length-prefixed then the context"
+            test_the_binding_is_the_tenant_length_prefixed_then_the_context;
         ] );
       ( "wrapped by the python port",
         [

@@ -1,6 +1,6 @@
 (tests
- (names test_cipher test_domain test_cache)
- (modules test_cipher test_domain test_cache)
+ (names test_cipher test_domain test_cache test_in_memory_keys)
+ (modules test_cipher test_domain test_cache test_in_memory_keys)
  (libraries
   ascetic_ddd.kms
   ascetic_ddd.session
@@ -11,9 +11,9 @@
   eio_main
   mtime))
 
-(test
- (name test_pg)
- (modules test_pg)
+(tests
+ (names test_pg test_pg_signing)
+ (modules test_pg test_pg_signing)
  (libraries
   ascetic_ddd.kms
   ascetic_ddd.kms.pg

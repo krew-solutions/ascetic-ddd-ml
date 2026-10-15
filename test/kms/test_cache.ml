@@ -140,6 +140,46 @@ let test_a_refusal_is_not_kept () =
         (Counting.unwraps (Cached_counting.inner cached));
       Alcotest.(check bool) "nothing held" true (Cached_counting.is_empty cached))
 
+(* The counting service with custody of its keys too. *)
+module Counting_with_custody = struct
+  include Counting
+
+  let create_kek _ _ ~tenant_id:_ (_ : Kek_options.t) = Ok Key_version.first
+
+  let retire_kek_versions_before t _ ~tenant_id:_ _ =
+    t.deletes <- t.deletes + 1;
+    Ok ()
+end
+
+module Cached_with_custody = Cached.With_custody (Counting_with_custody)
+
+let test_retiring_a_tenant_s_versions_forgets_its_keys_here () =
+  let cached =
+    Cached_with_custody.create ~clock:(clock ()) (Counting_with_custody.create ())
+  in
+  with_session (fun session ->
+      let unwrap tenant_id wrapped =
+        match Cached_with_custody.decrypt_dek cached session ~tenant_id wrapped with
+        | Ok key -> key
+        | Error e -> Alcotest.failf "decrypt_dek: %a" Kms_error.pp e
+      in
+      ignore (unwrap "t1" "wrapped-1");
+      ignore (unwrap "t2" "wrapped-1");
+      Alcotest.(check bool)
+        "custody passes through" true
+        (Cached_with_custody.create_kek cached session ~tenant_id:"t1" Kek_options.default
+        = Ok Key_version.first);
+      Alcotest.(check bool)
+        "retired" true
+        (Cached_with_custody.retire_kek_versions_before cached session ~tenant_id:"t1"
+           (Key_version.of_int_exn 2)
+        = Ok ());
+      Alcotest.(check int) "one held" 1 (Cached_with_custody.length cached);
+      ignore (unwrap "t1" "wrapped-1");
+      Alcotest.(check int)
+        "asked again for the retired tenant" 3
+        (Counting.unwraps (Cached_with_custody.inner cached)))
+
 let test_everything_else_passes_through () =
   let cached = Cached_counting.create ~clock:(clock ()) (Counting.create ()) in
   with_session (fun session ->
@@ -174,6 +214,8 @@ let () =
           case "deleting a tenant's kek forgets its keys here"
             test_deleting_a_tenant_s_kek_forgets_its_keys_here;
           case "a refusal is not kept" test_a_refusal_is_not_kept;
+          case "retiring a tenant's versions forgets its keys here"
+            test_retiring_a_tenant_s_versions_forgets_its_keys_here;
           case "everything else passes through" test_everything_else_passes_through;
         ] );
     ]

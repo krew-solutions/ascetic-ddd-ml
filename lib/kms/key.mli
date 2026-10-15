@@ -1,4 +1,5 @@
-(** A symmetric key in the clear: bytes that are never printed.
+(** A symmetric key in the clear, or the private half of an asymmetric one: bytes that are
+    never printed.
 
     The type is abstract so that a key does not end up in a log or an error by accident:
     {!pp} shows its length and nothing else. The runtime gives no way to wipe a value when
@@ -13,6 +14,10 @@ val of_string : string -> t
 
 val to_string : t -> string
 (** The bytes. *)
+
+val random : int -> (t, Kms_error.t) result
+(** So many bytes from the operating system, [getrandom(2)] on Linux; [Entropy] when it
+    gives none. For the keys the libraries draw from a seed: a signing key, a MAC key. *)
 
 val length : t -> int
 (** How many bytes. *)

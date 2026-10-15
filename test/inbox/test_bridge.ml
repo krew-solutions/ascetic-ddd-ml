@@ -291,8 +291,34 @@ let test_the_outbox_feeds_the_inbox_without_a_broker env uri () =
   Alcotest.(check int) "marked" 1 (processed_soon f 1);
   Alcotest.(check int) "the handler's write committed with the mark" 1 (handled f);
   Alcotest.(check string)
-    "the destination the outbox stamped" "inbox://orders/order-7" (stored_uri f);
+    "the intake's name, which is the destination the outbox stamped"
+    "inbox://orders/order-7" (stored_uri f);
   Subscription.cancel dispatcher;
+  Subscription.cancel processing
+
+(* A message from a broker that carries a [destination] header, a producer on
+   this seedwork stamps its topic on it and the broker forwards headers, lands
+   under the intake's name all the same: the row's uri is the inbox channel
+   the bridge published to, with the key, and the producer's address is not
+   kept (ADR-0025). *)
+let test_a_message_with_a_foreign_destination_lands_under_the_intake_s_uri env uri () =
+  with_fixture ~name:"foreign_destination" ~stem:"inbox-bridge-foreign-destination" env
+    uri
+  @@ fun f ->
+  let intake, publish = with_intake f in
+  let received, processing = consume f in
+  publish
+    (Message.with_header
+       (order "stamped" 4 "00000000-0000-4000-8000-000000000004")
+       "destination" "kafka://orders/order-7");
+  Alcotest.(check bool)
+    "the message is processed" true
+    (soon f ~seconds:20.0 (fun () -> received () <> []));
+  Alcotest.(check (list string)) "once" [ "stamped" ] (received ());
+  Alcotest.(check int) "marked" 1 (processed_soon f 1);
+  Alcotest.(check string)
+    "the intake's name, not the producer's" "inbox://orders/order-7" (stored_uri f);
+  Subscription.cancel intake;
   Subscription.cancel processing
 
 (* A handler that fails leaves the message unprocessed and its own writes
@@ -423,6 +449,8 @@ let () =
                 test_a_message_from_a_broker_is_processed_once_in_the_marking_transaction;
               case "the outbox feeds the inbox without a broker"
                 test_the_outbox_feeds_the_inbox_without_a_broker;
+              case "a message with a foreign destination lands under the intake's uri"
+                test_a_message_with_a_foreign_destination_lands_under_the_intake_s_uri;
               case "a failing handler is retried and its writes are rolled back"
                 test_a_failing_handler_is_retried_and_its_writes_are_rolled_back;
               case "a handler's permanent verdict parks the message at once"

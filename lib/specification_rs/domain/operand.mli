@@ -73,5 +73,5 @@ module type S = sig
       [None] where there is nothing to read, and an error where the text is not of the
       form the kind is read in. The evaluator asks this of a constant of the tree under a
       comparison, and of nothing else. A type of values with no such kinds answers
-      [Ok None]. ADR-0015 of the reference. *)
+      [Ok None]. ADR-0026, ADR-0015 of the reference. *)
 end

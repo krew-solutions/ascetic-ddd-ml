@@ -1,5 +1,21 @@
+module type S = sig
+  type t
+  type service
+
+  include Kms_port.S with type t := t
+
+  val default_capacity : int
+  val default_ttl : float
+  val create : ?capacity:int -> ?ttl:float -> clock:_ Eio.Time.Mono.t -> service -> t
+  val inner : t -> service
+  val length : t -> int
+  val is_empty : t -> bool
+  val forget : t -> tenant_id:string -> unit
+end
+
 module Make (K : Kms_port.S) = struct
   type session = K.session
+  type service = K.t
 
   (* [order] breaks the tie between keys unwrapped at the same reading of the
      clock: the oldest is the one that came first. *)
@@ -105,4 +121,22 @@ module Make (K : Kms_port.S) = struct
   (* Deletes through the service and forgets the tenant's keys held here. *)
   let delete_kek t session ~tenant_id =
     Result.map (fun () -> forget t ~tenant_id) (K.delete_kek t.kms session ~tenant_id)
+end
+
+module With_custody (K : sig
+  include Kms_port.S
+  include Key_custody.S with type t := t and type session := session
+end) =
+struct
+  include Make (K)
+
+  let create_kek t session ~tenant_id options =
+    K.create_kek t.kms session ~tenant_id options
+
+  (* What was unwrapped under a retired version is forgotten here as on a
+     deletion: the cache's time to live would bound it otherwise. *)
+  let retire_kek_versions_before t session ~tenant_id version =
+    Result.map
+      (fun () -> forget t ~tenant_id)
+      (K.retire_kek_versions_before t.kms session ~tenant_id version)
 end

@@ -26,6 +26,7 @@ type fixture = {
   sessions : Cohttp_eio.Client.t Rest_pool.t;
   kms : Vault.t;
   addr : string;
+  token : string;
   tenants : string * string;
 }
 
@@ -44,6 +45,7 @@ let with_fixture ~name env ~addr ~token body =
       sessions = Rest_pool.create ~clock:(Eio.Stdenv.mono_clock env) client;
       kms = Vault.create ~addr ~token ();
       addr;
+      token;
       tenants = (Printf.sprintf "test-%s-1" name, Printf.sprintf "test-%s-2" name);
     }
   in
@@ -145,9 +147,10 @@ let test_deleting_the_key_shreds_what_it_wrapped f =
          let* _ = Vault.rotate_kek kms tx ~tenant_id in
          let* wrapped = Vault.encrypt_dek kms tx ~tenant_id (key ()) in
          let* () = Vault.delete_kek kms tx ~tenant_id in
-         Alcotest.(check bool)
-           "refused with 400" true
-           (is_refused_with 400 (Vault.decrypt_dek kms tx ~tenant_id wrapped));
+         (* Transit's 400 for a gone key, read as such by one read of the key. *)
+         Alcotest.check unwrapped "the key is gone"
+           (Error (Kms_error.Kek_not_found { tenant_id; key_version = None }))
+           (Vault.decrypt_dek kms tx ~tenant_id wrapped);
          (* Deleting again is not an error. *)
          Vault.delete_kek kms tx ~tenant_id))
 
@@ -171,9 +174,10 @@ let test_one_tenant_s_key_does_not_unwrap_another_s_dek f =
          let* wrapped = Vault.encrypt_dek kms tx ~tenant_id:one dek in
          Alcotest.check unwrapped "its own tenant" (Ok dek)
            (Vault.decrypt_dek kms tx ~tenant_id:one wrapped);
-         Alcotest.(check bool)
-           "another tenant is refused with 400" true
-           (is_refused_with 400 (Vault.decrypt_dek kms tx ~tenant_id:other wrapped));
+         (* Another tenant's key, there and serving the version: Transit's 400
+            is the ciphertext's own fault, read as such. *)
+         Alcotest.check unwrapped "another tenant" (Error Kms_error.Decrypt)
+           (Vault.decrypt_dek kms tx ~tenant_id:other wrapped);
          Ok ()))
 
 let test_a_wrong_token_is_refused_by_vault f =
@@ -190,7 +194,66 @@ let test_a_vault_out_of_reach_is_a_transport_failure f =
   in
   Alcotest.(check bool)
     "unreachable" true
-    (match outcome with Error (Kms_error.Transport _) -> true | _ -> false)
+    (match outcome with
+    | Error (Kms_error.Transport _) -> true
+    | _ -> false)
+
+(* The settings that serve the bus, and custody (ADR-0024). *)
+
+let test_a_derived_key_binds_the_dek_to_its_context f =
+  let tenant_id = fst f.tenants in
+  let lifecycle =
+    Vault.create ~derivation_context:"policy.lifecycle" ~addr:f.addr ~token:f.token ()
+  in
+  let command =
+    Vault.create ~derivation_context:"integration.command" ~addr:f.addr ~token:f.token ()
+  in
+  let dek, wrapped =
+    get "generate_dek"
+      (atomic_with f lifecycle (fun tx kms -> Vault.generate_dek kms tx ~tenant_id))
+  in
+  (* The other channel's instance, over the same key, does not open it. *)
+  Alcotest.check unwrapped "another channel" (Error Kms_error.Decrypt)
+    (atomic_with f command (fun tx kms -> Vault.decrypt_dek kms tx ~tenant_id wrapped));
+  Alcotest.check unwrapped "its own" (Ok dek)
+    (atomic_with f lifecycle (fun tx kms -> Vault.decrypt_dek kms tx ~tenant_id wrapped))
+
+let test_managed_keys_are_not_made_on_first_contact f =
+  let tenant_id = fst f.tenants in
+  let managed = Vault.create ~managed_keys:true ~addr:f.addr ~token:f.token () in
+  Alcotest.(check (result unit error))
+    "not found, and not made"
+    (Error (Kms_error.Kek_not_found { tenant_id; key_version = None }))
+    (Result.map ignore
+       (atomic_with f managed (fun tx kms -> Vault.generate_dek kms tx ~tenant_id)))
+
+let test_custody_makes_the_key_once_and_retires_its_versions f =
+  let tenant_id = fst f.tenants in
+  let a_version = Alcotest.testable Key_version.pp Key_version.equal in
+  let versions = Alcotest.(result a_version error) in
+  get "atomic"
+    (atomic f (fun tx kms ->
+         let create options = Vault.create_kek kms tx ~tenant_id options in
+         Alcotest.check versions "made" (Ok Key_version.first)
+           (create Kek_options.default);
+         Alcotest.check versions "left as it is" (Ok Key_version.first)
+           (create Kek_options.default);
+         Alcotest.(check bool)
+           "a derived one asked of a plain key is a conflict" true
+           (match create { Kek_options.default with derived = true } with
+           | Error (Kms_error.Conflict _) -> true
+           | _ -> false);
+         let* wrapped_v1 = Vault.encrypt_dek kms tx ~tenant_id (key ()) in
+         Alcotest.check versions "rotated"
+           (Ok (Key_version.of_int_exn 2))
+           (Vault.rotate_kek kms tx ~tenant_id);
+         let* () =
+           Vault.retire_kek_versions_before kms tx ~tenant_id (Key_version.of_int_exn 2)
+         in
+         Alcotest.check unwrapped "what the retired version wrapped is gone"
+           (Error (Kms_error.No_key_of_version 1))
+           (Vault.decrypt_dek kms tx ~tenant_id wrapped_v1);
+         Ok ()))
 
 let () =
   match Sys.getenv_opt "TEST_VAULT_ADDR" with
@@ -205,7 +268,13 @@ let () =
       enable_transit env ~addr ~token;
       let case name test =
         Alcotest.test_case name `Quick (fun () ->
-            let slug = String.map (function ' ' | '\'' -> '_' | c -> c) name in
+            let slug =
+              String.map
+                (function
+                  | ' ' | '\'' -> '_'
+                  | c -> c)
+                name
+            in
             with_fixture ~name:slug env ~addr ~token test)
       in
       Alcotest.run "Vault_transit over cohttp"
@@ -231,5 +300,11 @@ let () =
                 test_a_wrong_token_is_refused_by_vault;
               case "a vault out of reach is a transport failure"
                 test_a_vault_out_of_reach_is_a_transport_failure;
+              case "a derived key binds the dek to its context"
+                test_a_derived_key_binds_the_dek_to_its_context;
+              case "managed keys are not made on first contact"
+                test_managed_keys_are_not_made_on_first_contact;
+              case "custody makes the key once and retires its versions"
+                test_custody_makes_the_key_once_and_retires_its_versions;
             ] );
         ]

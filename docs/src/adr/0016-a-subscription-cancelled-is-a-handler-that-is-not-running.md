@@ -79,7 +79,11 @@ of `cancel` does not change.
    runtime, a task handle to await, which this port's handles never were; a
    port that kept "returns at once" would have to grow a second operation
    to wait with, and every caller that stops in good order would call both.
-   The README of the bus names the difference.
+   The difference did not last: the reference carried this decision back on
+   2026-10-01, its `cancel` asynchronous now, detaching once under a lock
+   and waiting until no call of the handler is in flight, a loop served by
+   a task of its own; its detaching is one step under the lock, so the race
+   `Cancel.tla` found here has no counterpart there.
 4. *A cancel between the read of the handlers and the call could still let
    one call through after it returned.* In the in-memory broker the read and
    the call are apart, so the call is admitted a second time under the lock,

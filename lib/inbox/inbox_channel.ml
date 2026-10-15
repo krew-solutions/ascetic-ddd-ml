@@ -8,7 +8,8 @@ let scheme = "inbox"
 let ( let* ) = Result.bind
 
 (* The headers that are columns of the inbox: its identity, and the channel the
-   message was sent to, which the outbox stamps. *)
+   row goes out under, which the intake names; a [destination] on the way in
+   is the producer's and is not kept as metadata either. *)
 let tenant_id = "tenant_id"
 let stream_type = "stream_type"
 let stream_id = "stream_id"
@@ -55,18 +56,18 @@ let inbox_message_of ~channel message =
         (malformed (Printf.sprintf "`%s` is not an integer: %s" stream_position position))
       (int_of_string_opt position)
   in
-  let* uri =
-    match Message.header message destination with
-    | Some destination -> text destination
-    | None -> (
-        let* key =
-          match Message.key message with
-          | Some key -> Result.map Option.some (text key)
-          | None -> Ok (Bus_uri.key channel)
-        in
-        match key with
-        | Some key -> Ok (Bus_uri.without_key channel ^ "/" ^ key)
-        | None -> Ok channel)
+  (* The intake's name for the row: the channel this producer was built for,
+     with the message's key, or the channel's own (ADR-0025). A [destination]
+     header the producer stamped is its address, not ours. *)
+  let* key =
+    match Message.key message with
+    | Some key -> Result.map Option.some (text key)
+    | None -> Ok (Bus_uri.key channel)
+  in
+  let uri =
+    match key with
+    | Some key -> Bus_uri.without_key channel ^ "/" ^ key
+    | None -> channel
   in
   let* metadata =
     List.fold_right

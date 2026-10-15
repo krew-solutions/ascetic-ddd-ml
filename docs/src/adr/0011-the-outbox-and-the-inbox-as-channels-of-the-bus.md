@@ -75,6 +75,25 @@ inside the message, so one table serves every topic.
   and `Inbox_channel.consumer` only, so the ports and `publish` stay free
   of them.
 
+Refined 2026-10-15 by ADR-0025: the destination header is the only source
+for the relay out of an outbox; at the intake into an inbox the row is
+named by the channel the intake published it to, and a `destination` a
+foreign producer stamped is not kept. The Kafka adapter forwards headers,
+so a row would otherwise be named by its sender's stack.
+
+Amended 2026-10-15, after the reference did the same: a message the
+transactional consumer cannot decode is parked, not acknowledged.
+`Transactional.Consumer.subscribe` answered a decoding failure with a
+warning and `Ok ()`, so the inbox marked the message processed as if a
+handler had seen it, and a payload no decoder could read, a schema the
+consumer predates, a row another producer wrote, was lost without a trace,
+behind the one place built to keep such a message where an operator can
+see it. The plain consumer's choice to skip what it cannot decode is the
+broker's: there is nowhere to park a message on a topic. The inbox has a
+place (ADR-0004): a decoding failure is now `Failure.Permanent`, and the
+inbox parks the message at once with the decoder's reason. The test that
+pinned the acknowledgement pins the verdict.
+
 ## Consequences
 
 - `Message.t` carries headers: `destination`, stamped by the outbox and

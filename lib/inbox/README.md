@@ -64,14 +64,27 @@ let* processing = Transactional.Consumer.subscribe orders (fun tx order -> place
 ```
 
 Headers become columns: `tenant_id`, `stream_type`, `stream_id`,
-`stream_position`; `destination`, the channel the message was sent to as
-the outbox stamps it, becomes `uri`, and without one the inbox channel the
-message was published to, key included, does. Every other header is a
-field of `metadata`, structured again when its text is a JSON array or
-object. Published from an outbox to `inbox://orders/order-7`, a message
-crosses the outbox dispatcher's bridge into the inbox without a broker:
-after-commit delivery and processing in the marking transaction, in one
-database.
+`stream_position`; `uri` is the inbox channel the message was published
+to, key included, the intake's own name for what it received, and the
+`destination` header the row goes out with (ADR-0025). A `destination`
+header on the way in is the producer's address and is not kept: for the
+relay out of an outbox it equals the channel anyway, since the bridge
+builds the producer for it; from a broker it would name the producer's
+topic, and two producers of one topic would name one row two ways. Every
+other header is a field of `metadata`, structured again when its text is a
+JSON array or object. Published from an outbox to `inbox://orders/order-7`,
+a message crosses the outbox dispatcher's bridge into the inbox without a
+broker: after-commit delivery and processing in the marking transaction, in
+one database.
+
+One subscriber, every channel: the inbox takes no filter by address. A
+consumer that saw one address would wait for ever on a causal dependency
+published under another, and the wait is resumed by the transaction that
+marks the dependency, which needs one loop over every row. The subscriber
+routes by the row's `destination` and by `stream_type`; the Python source
+dropped its route by address for the same reason (ADR-0025). An inbox that
+receives several sealed channels chooses the stage per row by the same
+header, `Sealing.by_destination` of `ascetic_ddd.dek.envelope`.
 
 The processing loop is a daemon fiber on the switch the consumer was given;
 cancel the subscription to stop it, and the cancel returns when the loop has

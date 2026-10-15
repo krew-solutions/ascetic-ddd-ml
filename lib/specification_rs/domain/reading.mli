@@ -8,7 +8,7 @@
       {!Operand.S.read_beside}. What is read is a subset of what the server reads, so that
       nothing the evaluator accepts fails on the server. A string beside a number or a
       boolean stays a string: those have literals, and a string there is the author's
-      choice. ADR-0015 of the reference.
+      choice. ADR-0026, ADR-0015 of the reference.
 
     The readers here know nothing of {!Value}: they give the number a value is made of,
     and {!Value} wraps it. *)

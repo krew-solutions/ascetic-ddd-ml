@@ -3,7 +3,9 @@
  (public_name ascetic_ddd.kms)
  (libraries
   ascetic_ddd.session
+  digestif
   mirage-crypto
+  mirage-crypto-ec
   mirage-crypto-rng.unix
   eqaf
   eio

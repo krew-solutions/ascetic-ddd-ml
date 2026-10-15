@@ -34,15 +34,26 @@ let associated_data message names =
   in
   Ok (Canonical.to_string (`List pairs))
 
-(* Which failures of the KMS no retry will mend: a key that is gone, a
-   ciphertext that does not open, bytes that are not what they should be. The
-   rest, the session, the database, Vault out of reach, are of the moment. *)
+(* Which failures of the KMS no retry will mend: a key that is gone or
+   retired, a ciphertext that does not open, an operation the KMS refuses
+   under this identity or context, bytes that are not what they should be.
+   The rest, the session, the database, Vault out of reach, are of the
+   moment. *)
 let verdict (error : Kms_error.t) =
   let text = Kms_error.to_string error in
   match error with
-  | Kek_not_found _ | Decrypt | Wrong_key_version _ | No_key_of_version _
-  | Unsupported_algorithm _ | Malformed _ ->
-      Failure.permanent text
+  | Kek_not_found _
+  | Decrypt
+  | Wrong_key_version _
+  | No_key_of_version _
+  | Signing_key_not_found _
+  | Mac_key_not_found _
+  | Invalid_signature
+  | Unsupported_algorithm _
+  | Malformed _
+  | Conflict _
+  | Forbidden _
+  | Unsupported _ -> Failure.permanent text
   | Entropy _ | Session _ | Database _ | Transport _ | Vault _ -> Failure.transient text
 
 let of_kms result = Result.map_error verdict result
@@ -71,8 +82,11 @@ struct
     reusing : reusing option;
   }
 
-  let create ?(algorithm = Algorithm.Aes_256_gcm) ?(bound_to = [ tenant_id; message_id ])
-      sessions kms =
+  let create
+      ?(algorithm = Algorithm.Aes_256_gcm)
+      ?(bound_to = [ tenant_id; message_id ])
+      sessions
+      kms =
     { sessions; kms; algorithm; bound_to; reusing = None }
 
   let reusing t ~clock reuse =

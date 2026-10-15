@@ -21,16 +21,18 @@ let unwrap t ~tenant_id wrapped =
   let* cipher = cipher_for t ~tenant_id in
   Wrapped_key.unwrap wrapped version cipher
 
-let make_kek t ~tenant_id ~version =
-  Kek.generate ~tenant_id ~version ~algorithm:t.algorithm ~wrap:(wrap t ~tenant_id)
+let make_kek ?context t ~tenant_id ~version =
+  Kek.generate ~context ~tenant_id ~version ~algorithm:t.algorithm
+    ~wrap:(wrap t ~tenant_id)
 
-let generate_kek t ~tenant_id = make_kek t ~tenant_id ~version:Key_version.first
+let generate_kek ?context t ~tenant_id =
+  make_kek ?context t ~tenant_id ~version:Key_version.first
 
-let load_kek t ~tenant_id ~version ~algorithm wrapped =
-  Kek.load ~tenant_id ~version ~algorithm ~unwrap:(unwrap t ~tenant_id) wrapped
+let load_kek ?context t ~tenant_id ~version ~algorithm wrapped =
+  Kek.load ~context ~tenant_id ~version ~algorithm ~unwrap:(unwrap t ~tenant_id) wrapped
 
 let rotate_kek t kek =
   let* version = Key_version.next (Kek.version kek) in
-  make_kek t ~tenant_id:(Kek.tenant_id kek) ~version
+  make_kek ?context:(Kek.context kek) t ~tenant_id:(Kek.tenant_id kek) ~version
 
 let pp ppf t = Format.fprintf ppf "Master_key(%a)" Algorithm.pp t.algorithm

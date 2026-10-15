@@ -9,12 +9,18 @@
     because through it the handler's writes would fall outside that transaction.
 
     Headers become columns: [tenant_id], [stream_type], [stream_id], the JSON text of the
-    id, or the id as a string when it is not JSON, [stream_position], and [destination]
-    for [uri]: the channel the message was sent to, as the outbox stamps it; without one,
-    the inbox channel it was published to, key included. Every other header is a field of
+    id, or the id as a string when it is not JSON, [stream_position]; [uri] is the inbox
+    channel the message was published to, key included: the intake's name for what it
+    received, and the [destination] header the row goes out with (ADR-0025). A
+    [destination] header on the way in is the producer's address and is not kept: for the
+    relay out of an outbox it equals the channel anyway, since the bridge builds the
+    producer for it; from a broker it would name the producer's topic, and two producers
+    of one topic would name one row two ways. Every other header is a field of
     [metadata], as text, or structured again when the text is a JSON array or object, so
     [causal_dependencies] come back as they left. The channel name after [inbox://] is not
-    read yet: the whole inbox is one channel. *)
+    a filter: the whole inbox is one channel with one subscriber, which routes by the
+    row's [destination] and [stream_type], since a consumer that saw one address would
+    wait for ever on a causal dependency published under another (ADR-0005, ADR-0025). *)
 
 module Session = Ascetic_session_caqti.Caqti_session
 

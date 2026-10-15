@@ -34,6 +34,11 @@ module Consumer = struct
             match t.decode message with
             | Ok value -> handler session value
             | Error reason ->
-                Log.warn (fun m -> m "bus[transactional]: decoding failed: %s" reason);
-                Ok ()))
+                (* A message the decoder cannot read will not be read on a
+                   retry either: the verdict is permanent, and the inbox parks
+                   it where an operator can see it, instead of marking it
+                   processed as if it had been handled. *)
+                Log.warn (fun m ->
+                    m "bus[transactional]: decoding failed, parking: %s" reason);
+                Error (Failure.permanent reason)))
 end

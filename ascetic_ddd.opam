@@ -33,8 +33,11 @@ depends: [
   "alcotest"
   "mirage-crypto" {>= "1.0"}
   "mirage-crypto-rng" {>= "1.0"}
+  "mirage-crypto-ec" {>= "1.0"}
+  "digestif"
   "cohttp-eio" {>= "6.0" & with-test}
   "qcheck" {>= "0.21" & with-test}
+  "x509" {>= "1.0" & with-test}
   "odoc" {with-doc}
 ]
 depopts: ["kafka-eio" "cohttp-eio"]

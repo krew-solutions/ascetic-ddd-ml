@@ -94,8 +94,10 @@ payload moved under another message's headers does not open while the same
 message delivered again does; the names travel in `dek_bound_to`, and the
 opening side reads them from there. A message missing a header it is bound
 to, or one whose key or payload does not open, or whose tenant's KEK is
-gone, is refused for good, `Failure.Permanent`, and the inbox parks it; a
-KMS out of reach is a failure of the moment, and the message is tried again.
+gone or retired, or which the KMS refuses to open under this identity or
+context, is refused for good, `Failure.Permanent`, and the inbox parks it;
+a KMS out of reach is a failure of the moment, and the message is tried
+again.
 
 A fresh DEK per message is one KMS call per message on each side. Where the
 KMS is a network away, `reusing stage ~clock reuse` keeps a tenant's DEK at
@@ -104,12 +106,66 @@ the sealing side for so many messages or so long, a thousand or a minute by
 `Ascetic_kms.Cached` in front of the opening side's KMS unwraps each key
 once. Both are off unless asked for.
 
-```ocaml
-module Sealing = Ascetic_dek_envelope.Envelope_stage.Make (Pool) (Pg_kms)
+One stage serves one channel: the KMS it is built over carries the
+channel as its derivation context, `derivation_context` on either adapter
+of `ascetic_ddd.kms`, taken from the contract both ends are built from, so
+a DEK drawn for the channel unwraps there and nowhere else, and the DEK in
+service is the channel's (ADR-0024). `Sealing.Make (Sessions) (Kms)` is the
+stages of a service's channels, one per channel, built up front from the
+channels its contracts name: each over a KMS instance the caller's
+function makes for the channel, serving it as the context and making no
+key, `managed_keys`, behind a `Cached.Make` of its own, with the
+parameters the deployment's, the reuse at the sealing end and the cache's
+time to live at the opening end. `of_channel` answers `None` for a channel
+the sealing was not built for, so a composition root refuses to start
+rather than seal under a typo.
 
-let sealing = Sealing.stage (Sealing.create kms_sessions kms)
-let placed = Transactional.Producer.through (Outbox_channel.producer outbox ~destination ~encode) sealing
-let orders = Transactional.Consumer.through (Inbox_channel.consumer ~sw ~clock inbox ~decode) sealing
+```ocaml
+module Sealing = Ascetic_dek_envelope.Sealing.Make (Pool) (Pg_kms)
+
+let sealing =
+  Sealing.create ~clock sessions ~channels:[ "policy.lifecycle"; "inbox://policy-commands" ]
+    (fun channel -> Pg_kms.create ~derivation_context:channel ~managed_keys:true master_key)
+
+let placed =
+  Transactional.Producer.through
+    (Outbox_channel.producer outbox ~destination:"kafka://policy.lifecycle" ~encode)
+    (Option.get (Sealing.of_channel sealing "policy.lifecycle"))
+```
+
+An inbox that receives several channels has one subscriber for every row
+and `through` takes one stage: `by_destination` gives it. A row's
+`destination` is the inbox channel the intake published it to, key
+included, the receiver's own name for the channel it received on
+(ADR-0025), and the stage maps that name, key left aside, to the channel
+the row was sealed under at the producer's end. Built up front: a channel
+the sealing lacks is refused at construction, `unsealed_channel`; a row
+whose destination is not mapped, or that has none, is refused for good
+before any KMS is asked.
+
+```ocaml
+let intake =
+  match
+    Sealing.by_destination sealing
+      [ ("inbox://policy-commands", "inbox://policy-commands");
+        ("inbox://device.lifecycle", "device.lifecycle") ]
+  with
+  | Ok by_destination ->
+      Transactional.Consumer.through
+        (Inbox_channel.consumer ~sw ~clock inbox ~decode)
+        (Ascetic_dek_envelope.Sealing.By_destination.stage by_destination)
+  | Error unsealed ->
+      failwith (Format.asprintf "%a" Ascetic_dek_envelope.Sealing.pp_unsealed_channel unsealed)
+```
+
+One stage over one KMS, by hand:
+
+```ocaml
+module Stage = Ascetic_dek_envelope.Envelope_stage.Make (Pool) (Pg_kms)
+
+let stage = Stage.stage (Stage.create kms_sessions kms)
+let placed = Transactional.Producer.through (Outbox_channel.producer outbox ~destination ~encode) stage
+let orders = Transactional.Consumer.through (Inbox_channel.consumer ~sw ~clock inbox ~decode) stage
 ```
 
 ## What is not here
@@ -128,12 +184,15 @@ belong to the repository that chains them.
   `int`; an id beyond its range is text.
 * A field of an id given twice counts once, the last one: an association
   list can say what a map cannot.
-* Making a resource's first DEK runs in a scope of its own; the reference
-  takes the lock in the caller's transaction and has none of its own
-  (ADR-0014).
 * The port is a signature and the store and the stage are functors over the
   KMS, where the reference has traits and generics. The stage takes its
-  clock from the caller, and only when it reuses keys.
+  clock from the caller, and only when it reuses keys; the sealing of the
+  channels takes it for the reuse and the cache. Making a resource's first
+  DEK runs in a scope of its own (ADR-0014), as the reference's does since
+  it carried the decision back.
+* `By_destination` is a value with the stage and its destinations, where
+  the reference's is a stage itself: a stage here is a record of two
+  functions, which cannot carry the list a composition root checks.
 
 ## Testing
 

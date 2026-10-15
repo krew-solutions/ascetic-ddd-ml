@@ -3,7 +3,8 @@
     The one key of the system, from configuration. It makes, loads and rotates a tenant's
     KEKs, and is what wraps them; the tenant is named at each operation, and is the
     associated data of the wrapping, so a key wrapped for one tenant does not unwrap for
-    another. A KEK made by the master key is of the master key's algorithm. *)
+    another. A KEK made by the master key is of the master key's algorithm, and serves
+    the derivation context it was made for, if one (ADR-0024). *)
 
 type t
 
@@ -17,16 +18,19 @@ val algorithm : t -> Algorithm.t
 (** The algorithm of the key, and so of every KEK it makes. *)
 
 val wrap : t -> tenant_id:string -> Key.t -> (Wrapped_key.t, Kms_error.t) result
-(** Wraps the key for the tenant. *)
+(** Wraps the key for the tenant, or for whatever name is given: a signing key is wrapped
+    under its own name, so that a key wrapped for one tenant or algorithm does not open
+    as another's. *)
 
 val unwrap : t -> tenant_id:string -> Wrapped_key.t -> (Key.t, Kms_error.t) result
 (** Unwraps what {!wrap} wrapped for the tenant. *)
 
-val generate_kek : t -> tenant_id:string -> (Kek.t, Kms_error.t) result
+val generate_kek : ?context:string -> t -> tenant_id:string -> (Kek.t, Kms_error.t) result
 (** The tenant's first KEK: a fresh key of this master key's algorithm, wrapped by it,
-    version 1. *)
+    version 1; serving [context] when one is given. *)
 
 val load_kek :
+  ?context:string ->
   t ->
   tenant_id:string ->
   version:Key_version.t ->
@@ -37,7 +41,7 @@ val load_kek :
 
 val rotate_kek : t -> Kek.t -> (Kek.t, Kms_error.t) result
 (** The next version of the KEK: a fresh key of this master key's algorithm, wrapped by
-    it, one version up. *)
+    it, one version up, serving the same context. *)
 
 val pp : Format.formatter -> t -> unit
 (** The algorithm; never the key. *)

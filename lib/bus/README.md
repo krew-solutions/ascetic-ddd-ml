@@ -62,7 +62,11 @@ subscription's calls in flight: every adapter here makes its calls through
 it. The protocol is model-checked, `verify/tla/Cancel.tla`, and the model
 earned its keep: it found a second cancel returning while the first was
 still detaching. A message a consumer cannot decode
-is reported and skipped: a poison message must not stop the rest.
+is reported and skipped: a poison message must not stop the rest, and a
+broker has nowhere to park it. The transactional consumer answers the same
+failure with `Failure.Permanent` instead, since the inbox has a place: the
+message is parked where an operator can see it, never acknowledged as if a
+handler had seen it (ADR-0011).
 
 A message may go through *stages* between the typed layer and the
 transport: `Producer.through producer stage` sends every message out through
