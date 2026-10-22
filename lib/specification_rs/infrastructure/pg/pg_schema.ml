@@ -48,10 +48,13 @@ type t = {
   alias : string option;
   keys : Foreign_key.t list;
   composites : (string * string) list;
+  documents : (string * string * Pg_layout.t) list;
+  gins : (string * string * string list) list;
 }
 [@@deriving show { with_path = false }, eq]
 
-let make table = { table; alias = None; keys = []; composites = [] }
+let make table =
+  { table; alias = None; keys = []; composites = []; documents = []; gins = [] }
 let alias alias schema = { schema with alias = Some alias }
 let key key schema = { schema with keys = schema.keys @ [ key ] }
 
@@ -60,6 +63,29 @@ let foreign_key table column referenced_table referenced_column schema =
 
 let composite table column schema =
   { schema with composites = schema.composites @ [ (table, column) ] }
+
+let document table column layout schema =
+  { schema with documents = schema.documents @ [ (table, column, layout) ] }
+
+let with_gin table column path schema =
+  { schema with gins = schema.gins @ [ (table, column, path) ] }
+
+let gin table column schema = with_gin table column [] schema
+let gin_at table column path schema =
+  with_gin table column (String.split_on_char '.' path) schema
+
+let gins schema table column =
+  List.filter_map
+    (fun (of_, name, path) ->
+      if String.equal of_ table && String.equal name column then Some path else None)
+    schema.gins
+
+(* The last declaration of the column. *)
+let layout schema table column =
+  List.fold_left
+    (fun found (of_, name, layout) ->
+      if String.equal of_ table && String.equal name column then Some layout else found)
+    None schema.documents
 
 let is_composite schema table column =
   List.exists

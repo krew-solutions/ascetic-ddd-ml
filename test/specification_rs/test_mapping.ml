@@ -26,40 +26,39 @@ let scalar i : domain Ast.t = value (Scalar (Value.of_int i))
 let column path name = Mapping.Scalar (Field (Path.sibling path name))
 
 let something : (domain, Value.t, string) Mapping.t =
-  {
-    field =
-      (fun path ->
-        match Path.names path with
-        | [ "something"; "id" ] ->
-            Ok
-              (Mapping.Composite
-                 [
-                   Composite [ column path "tenant_id"; column path "member_id" ];
-                   column path "something_id";
-                 ])
-        | [ "something"; "member_id" ] ->
-            Ok (Composite [ column path "tenant_id"; column path "member_id" ])
-        | [ "something"; (("rank" | "deleted_at") as name) ] -> Ok (column path name)
-        (* A collection is a member: where it is, by a path from the candidate. And a
+  Mapping.make
+    ~field:(fun path ->
+      match Path.names path with
+      | [ "something"; "id" ] ->
+          Ok
+            (Mapping.Composite
+               [
+                 Composite [ column path "tenant_id"; column path "member_id" ];
+                 column path "something_id";
+               ])
+      | [ "something"; "member_id" ] ->
+          Ok (Composite [ column path "tenant_id"; column path "member_id" ])
+      | [ "something"; (("rank" | "deleted_at") as name) ] -> Ok (column path name)
+      (* A collection is a member: where it is, by a path from the candidate. And a
            member of its item by its whole path, which starts with the collection's, in
            the domain's names and in the storage's. *)
-        | [ "something"; "parts" ] -> Ok (Scalar (Field (Path.global "parts")))
-        | [ "something"; "parts"; "weight" ] ->
-            Ok (Scalar (Field (Path.child (Path.global "parts") "weight_grams")))
-        | names -> Error ("unknown field: " ^ String.concat "." names));
-    value =
-      (fun value ->
-        let scalar v = Mapping.Scalar (Value (Value.Int v)) in
-        let member (id : member_id) =
-          Mapping.Composite [ scalar id.tenant_id; scalar id.member_id ]
-        in
-        Ok
-          (match value with
-          | Scalar value -> Scalar (Value value)
-          | Member_id id -> member id
-          | Member_something_id id ->
-              Composite [ member id.member; scalar id.something_id ]));
-  }
+      | [ "something"; "parts" ] -> Ok (Scalar (Field (Path.global "parts")))
+      | [ "something"; "tags" ] ->
+          Ok (Scalar (Field (Path.child (Path.global "document") "tags")))
+      | [ "something"; "parts"; "weight" ] ->
+          Ok (Scalar (Field (Path.child (Path.global "parts") "weight_grams")))
+      | names -> Error ("unknown field: " ^ String.concat "." names))
+    ~value:(fun value ->
+      let scalar v = Mapping.Scalar (Value (Value.Int v)) in
+      let member (id : member_id) =
+        Mapping.Composite [ scalar id.tenant_id; scalar id.member_id ]
+      in
+      Ok
+        (match value with
+        | Scalar value -> Scalar (Value value)
+        | Member_id id -> member id
+        | Member_something_id id -> Composite [ member id.member; scalar id.something_id ]))
+    ()
 
 let spec = Alcotest.testable (Ast.pp Value.pp) (Ast.equal Value.equal)
 
@@ -155,26 +154,26 @@ let the_predicate_of_a_collection_is_transformed_too () =
    member from the item. *)
 let a_mapping_is_asked_by_the_whole_path_and_the_answer_is_put_where_the_member_was () =
   let shops : (domain, Value.t, string) Mapping.t =
-    {
-      field =
-        (fun path ->
-          Alcotest.(check bool)
-            "asked from the candidate" true
-            (Path.root path = Path.Global);
-          match Path.names path with
-          | [ "limit" ] -> Ok (Scalar (field "max_price"))
-          | [ "categories" ] -> Ok (Scalar (field "cats"))
-          | [ "categories"; "limit" ] -> Ok (Scalar (field "cats.max_price"))
-          | [ "categories"; "products" ] -> Ok (Scalar (field "cats.goods"))
-          | [ "categories"; "products"; "price" ] ->
-              Ok (Scalar (field "cats.goods.price_cents"))
-          | [ "categories"; "products"; "id" ] ->
-              let id = Path.of_string "cats.goods.id" in
-              Ok (Composite [ column id "tenant_id"; column id "product_id" ])
-          | names -> Error ("unknown field: " ^ String.concat "." names));
-      value =
-        (function Scalar value -> Ok (Scalar (Value value)) | _ -> Error "not a scalar");
-    }
+    Mapping.make
+      ~field:(fun path ->
+        Alcotest.(check bool)
+          "asked from the candidate" true
+          (Path.root path = Path.Global);
+        match Path.names path with
+        | [ "limit" ] -> Ok (Scalar (field "max_price"))
+        | [ "categories" ] -> Ok (Scalar (field "cats"))
+        | [ "categories"; "limit" ] -> Ok (Scalar (field "cats.max_price"))
+        | [ "categories"; "products" ] -> Ok (Scalar (field "cats.goods"))
+        | [ "categories"; "products"; "price" ] ->
+            Ok (Scalar (field "cats.goods.price_cents"))
+        | [ "categories"; "products"; "id" ] ->
+            let id = Path.of_string "cats.goods.id" in
+            Ok (Composite [ column id "tenant_id"; column id "product_id" ])
+        | names -> Error ("unknown field: " ^ String.concat "." names))
+      ~value:(function
+        | Scalar value -> Ok (Scalar (Value value))
+        | _ -> Error "not a scalar")
+      ()
   in
   let specification =
     any "categories"
@@ -198,21 +197,23 @@ let a_mapping_is_asked_by_the_whole_path_and_the_answer_is_put_where_the_member_
 
 let what_the_mapping_puts_outside_its_collection_is_refused () =
   let astray : (domain, Value.t, string) Mapping.t =
-    {
-      field =
-        (fun path ->
-          Ok
-            (Scalar
-               (Field
-                  (match Path.names path with
-                  | [ _ ] -> path
-                  (* A member of an item answered with a column of the candidate. *)
-                  | _ -> Path.global "elsewhere"))));
-      value = (fun _ -> Ok (Scalar (int 1)));
-    }
+    Mapping.make
+      ~field:(fun path ->
+        Ok
+          (Scalar
+             (Field
+                (match Path.names path with
+                | [ _ ] -> path
+                (* A member of an item answered with a column of the candidate. *)
+                | _ -> Path.global "elsewhere"))))
+      ~value:(fun _ -> Ok (Scalar (int 1)))
+      ()
   in
   let valued : (domain, Value.t, string) Mapping.t =
-    { field = (fun _ -> Ok (Scalar (int 1))); value = (fun _ -> Ok (Scalar (int 1))) }
+    Mapping.make
+      ~field:(fun _ -> Ok (Scalar (int 1)))
+      ~value:(fun _ -> Ok (Scalar (int 1)))
+      ()
   in
   let specification = any "items" (gt (item "weight") (scalar 1)) in
   Alcotest.check transformed "astray" (Error Mapping.Outside_its_collection)
@@ -265,17 +266,20 @@ let a_composite_takes_only_equality () =
 
 let composites_of_different_lengths_do_not_compare () =
   let uneven : (domain, Value.t, string) Mapping.t =
-    {
-      field = (fun path -> Ok (Composite [ column path "a"; column path "b" ]));
-      value = (fun _ -> Ok (Composite [ Scalar (int 1); Scalar (int 2); Scalar (int 3) ]));
-    }
+    Mapping.make
+      ~field:(fun path -> Ok (Composite [ column path "a"; column path "b" ]))
+      ~value:(fun _ -> Ok (Composite [ Scalar (int 1); Scalar (int 2); Scalar (int 3) ]))
+      ()
   in
   Alcotest.check transformed "lengths" (Error Mapping.Shape_mismatch)
     (Mapping.transform uneven (eq (field "id") (scalar 1)))
 
 let a_composite_has_parts () =
   let hollow : (domain, Value.t, string) Mapping.t =
-    { field = (fun _ -> Ok (Composite [])); value = (fun _ -> Ok (Composite [])) }
+    Mapping.make
+      ~field:(fun _ -> Ok (Composite []))
+      ~value:(fun _ -> Ok (Composite []))
+      ()
   in
   Alcotest.check transformed "empty" (Error Mapping.Empty_composite)
     (Mapping.transform hollow (eq (field "id") (scalar 1)))
@@ -299,27 +303,28 @@ type who =
 
 let equality_with_what_the_mapping_says_is_the_storages_null_is_the_null_test () =
   let owners : (who, Value.t, string) Mapping.t =
-    {
-      field =
-        (fun path ->
-          Ok
-            (match Path.name path with
-            | "pair" -> Composite [ column path "a"; column path "b" ]
-            | _ -> Scalar (Field path)));
-      value =
-        (fun value ->
-          let known id = Mapping.Scalar (Value (Value.Int id)) in
-          Ok
-            (match value with
-            | Somebody id -> known id
-            | Nobody -> Null Value.Null
-            | Unknown -> Scalar (Value Value.Null)
-            | Pair (a, b) ->
-                Composite
-                  [
-                    known a; (match b with None -> Null Value.Null | Some b -> known b);
-                  ]));
-    }
+    Mapping.make
+      ~field:(fun path ->
+        Ok
+          (match Path.name path with
+          | "pair" -> Composite [ column path "a"; column path "b" ]
+          | _ -> Scalar (Field path)))
+      ~value:(fun value ->
+        let known id = Mapping.Scalar (Value (Value.Int id)) in
+        Ok
+          (match value with
+          | Somebody id -> known id
+          | Nobody -> Null Value.Null
+          | Unknown -> Scalar (Value Value.Null)
+          | Pair (a, b) ->
+              Composite
+                [
+                  known a;
+                  (match b with
+                  | None -> Null Value.Null
+                  | Some b -> known b);
+                ]))
+      ()
   in
   let owner () = field "owner"
   and nobody () = value Nobody
@@ -344,6 +349,87 @@ let equality_with_what_the_mapping_says_is_the_storages_null_is_the_null_test ()
         eq (field "pair") (value (Pair (1L, None))),
         and_ (eq (field "a") (int 1)) (is_null (field "b")) );
     ]
+
+(* An element of a collection of values is not asked about by default: it is what the
+   collection holds, where the mapping put the collection, and the constant it is
+   compared with is the mapping's. A composite constant has no parts there to be compared
+   with, and is refused. *)
+let an_element_of_a_collection_of_values_is_where_its_collection_is () =
+  let tagged = any "something.tags" (eq itself (scalar 5)) in
+  Alcotest.check transformed "where the collection is"
+    (Ok (any "document.tags" (eq itself (int 5))))
+    (Mapping.transform something tagged);
+  let composite = any "something.tags" (eq itself (value (something_id 1L 2L 3L))) in
+  Alcotest.check transformed "composite" (Error Mapping.Not_composite)
+    (Mapping.transform something composite);
+  Alcotest.check transformed "no item" (Error Mapping.No_current_item)
+    (Mapping.transform something itself)
+
+(* Members kept as a tenant's documents: a member id is its tenant and its member; the
+   storage keeps the member in an array, and the tenant once, in the row - of the members
+   of the tenant, and of the members of each of its teams. *)
+let members : (domain, Value.t, string) Mapping.t =
+  let document names = Ok (Mapping.Scalar (field ("document." ^ names))) in
+  Mapping.make
+    ~field:(fun path ->
+      match Path.names path with
+      | [ "tenant_id" ] -> Ok (Scalar (field "tenant_id"))
+      | [ "members" ] -> document "members"
+      | [ "teams" ] -> document "teams"
+      | [ "teams"; "members" ] -> document "teams.members"
+      | names -> Error ("unknown field: " ^ String.concat "." names))
+    ~value:something.value
+    ~element:(fun collection ->
+      match Path.names collection with
+      | [ "members" ] | [ "teams"; "members" ] ->
+          Ok (Composite [ Scalar (field "tenant_id"); Scalar itself ])
+      | names -> Error ("no collection of values: " ^ String.concat "." names))
+    ()
+
+(* An element the storage keeps in part in the candidate's row is what the mapping says it
+   is from the collection's predicate: the tenant in the row and the member in the array.
+   An equality with a member id is then the tenant compared with the row's and the member
+   with the element. An element of an enclosing collection is said from its own predicate
+   and put where it was; the candidate's row is where it was. *)
+let an_element_kept_in_part_in_the_candidates_row_is_compared_part_by_part () =
+  let member tenant_id member_id = value (Member_id { tenant_id; member_id }) in
+  let one = any "members" (eq itself (member 10L 3L)) in
+  let result = Mapping.transform members one in
+  Alcotest.check transformed "part by part"
+    (Ok
+       (any "document.members"
+          (and_ (eq (field "tenant_id") (int 10)) (eq itself (int 3)))))
+    result;
+  let schema =
+    Pg.Schema.(
+      make "tenants" |> alias "t"
+      |> document "tenants" "document"
+           Pg.Layout.(
+             empty |> values "members" Kind.Int
+             |> collection "teams" (empty |> values "members" Kind.Int)))
+  in
+  Alcotest.(check string)
+    "sql"
+    {|EXISTS (SELECT 1 FROM jsonb_array_elements_text(CASE WHEN jsonb_typeof("t"."document" -> 'members') = 'array' THEN "t"."document" -> 'members' END) AS "member_1" WHERE "t"."tenant_id" = $1 AND "member_1"::bigint = $2)|}
+    (compiled (Pg.compile ~schema (get result))).sql;
+  (* A member of the tenant who is a member of one of its teams: the element two
+     collections out, said from its own predicate. *)
+  let in_a_team =
+    any "members"
+      (any "teams" (any_at (Path.item "members") (eq itself (outer_itself 2))))
+  in
+  Alcotest.check transformed "two out"
+    (Ok
+       (any "document.members"
+          (any "document.teams"
+             (any_at (Path.item "members")
+                (and_
+                   (eq (field "tenant_id") (field "tenant_id"))
+                   (eq itself (outer_itself 2)))))))
+    (Mapping.transform members in_a_team);
+  (* A composite has no one value to be null: as of a member, refused. *)
+  Alcotest.check transformed "null test" (Error Mapping.Unexpected_composite)
+    (Mapping.transform members (any "members" (is_null itself)))
 
 let () =
   let case name f = Alcotest.test_case name `Quick f in
@@ -380,5 +466,9 @@ let () =
           case
             "equality with what the mapping says is the storage's null is the null test"
             equality_with_what_the_mapping_says_is_the_storages_null_is_the_null_test;
+          case "an element of a collection of values is where its collection is"
+            an_element_of_a_collection_of_values_is_where_its_collection_is;
+          case "an element kept in part in the candidate's row is compared part by part"
+            an_element_kept_in_part_in_the_candidates_row_is_compared_part_by_part;
         ] );
     ]

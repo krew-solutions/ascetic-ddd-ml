@@ -44,7 +44,9 @@ let get chars at = if at >= 0 && at < Array.length chars then Some chars.(at) el
 (* How many characters from [from] on satisfy [test], none if [from] is past the end. *)
 let run chars from test =
   let rec count at =
-    match get chars at with Some c when test c -> count (at + 1) | _ -> at - from
+    match get chars at with
+    | Some c when test c -> count (at + 1)
+    | _ -> at - from
   in
   if from > Array.length chars then 0 else count from
 

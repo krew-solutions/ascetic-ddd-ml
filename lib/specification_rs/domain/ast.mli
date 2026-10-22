@@ -17,6 +17,11 @@
 type 'v t =
   | Value of 'v  (** A constant. *)
   | Field of Path.t  (** The value of a member. *)
+  | Item of int
+      (** The item under test itself, [up] collections out: an element of a collection of
+          values - the groups a policy targets - which has no members to name. JSONPath's
+          [@] alone. A {!Path.t} names a member of the item, [Path.item "price"]; this is
+          the item. *)
   | Prefix of Operator.prefix * 'v t  (** An operator before its operand. *)
   | Infix of 'v t * Operator.infix * 'v t  (** An operator between its operands. *)
   | Postfix of 'v t * Operator.postfix  (** An operator after its operand. *)
@@ -47,6 +52,12 @@ val item : string -> 'v t
 
 val outer : int -> string -> 'v t
 (** The value of the member [name] of the item [up] collections out. *)
+
+val itself : 'v t
+(** The item under test itself: an element of a collection of values. *)
+
+val outer_itself : int -> 'v t
+(** The item [up] collections out itself: [outer_itself 0] is {!itself}. *)
 
 val not_ : 'v t -> 'v t
 (** [NOT operand]. *)

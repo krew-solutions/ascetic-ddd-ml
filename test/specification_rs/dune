@@ -1,6 +1,16 @@
 (tests
- (names test_specification test_dsl test_mapping test_jsonpath test_pg_compile)
- (modules test_specification test_dsl test_mapping test_jsonpath test_pg_compile)
+ (names
+  test_specification
+  test_dsl
+  test_mapping
+  test_jsonpath
+  test_pg_compile)
+ (modules
+  test_specification
+  test_dsl
+  test_mapping
+  test_jsonpath
+  test_pg_compile)
  (libraries ascetic_ddd.specification alcotest unix uuidm)
  (preprocess
   (pps ppx_deriving.show ppx_deriving.eq)))

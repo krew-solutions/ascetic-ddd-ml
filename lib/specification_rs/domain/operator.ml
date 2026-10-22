@@ -32,8 +32,12 @@ let div = Arithmetic Div
 let modulo = Arithmetic Mod
 let shl = Arithmetic Shl
 let shr = Arithmetic Shr
-let prefix_to_string = function Not -> "NOT" | Neg -> "-"
-let postfix_to_string = function Is_null -> "IS NULL" | Is_not_null -> "IS NOT NULL"
+let prefix_to_string = function
+  | Not -> "NOT"
+  | Neg -> "-"
+let postfix_to_string = function
+  | Is_null -> "IS NULL"
+  | Is_not_null -> "IS NOT NULL"
 
 let comparison_to_string = function
   | Eq -> "="
@@ -43,7 +47,9 @@ let comparison_to_string = function
   | Ge -> ">="
   | Le -> "<="
 
-let logical_to_string = function And -> "AND" | Or -> "OR"
+let logical_to_string = function
+  | And -> "AND"
+  | Or -> "OR"
 
 let arithmetic_to_string = function
   | Add -> "+"

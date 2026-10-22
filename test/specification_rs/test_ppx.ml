@@ -6,7 +6,14 @@ open Ascetic_specification
 module E = Evaluate.Make (Value)
 
 type profile = { age : int64 }
-type item = { name : string; price : int64; active : bool; discount : int64 option }
+type item = {
+  name : string;
+  price : int64;
+  active : bool;
+  discount : int64 option;
+  tags : string list;
+}
+
 type category = { items : item list }
 
 type store = {
@@ -18,6 +25,8 @@ type store = {
   owner : profile;
   items : item list;
   categories : category list;
+  tags : string list;
+  sizes : int64 option list;
 }
 
 let%specification adult_owner (store : store) = store.owner.age >= 18L
@@ -76,7 +85,9 @@ let%specification open_or_closed_after (s : store) (at : int64) =
   Option.fold ~none:true ~some:(fun closed -> closed > at) s.closed_at
 
 let%specification known_as_pens (s : store) =
-  match s.alias with None -> false | Some alias -> alias = "Pens"
+  match s.alias with
+  | None -> false
+  | Some alias -> alias = "Pens"
 
 (* A parameter that is an option is asked the same way, and what it holds is compared
    with what the member holds: an option itself has no order. *)
@@ -106,6 +117,26 @@ let%specification has_a_well_discounted_item (s : store) =
       | None -> false
       | Some discount -> Int64.mul discount 10L > Int64.sub item.price 10L)
     s.items
+
+(* An element of a collection of values is the item itself, as the closure names it or as
+   [List.mem] asks for it; the closure is what is tested. *)
+let%specification tagged (s : store) (tag : string) =
+  List.exists (fun t -> t = tag) s.tags
+let%specification tagged_as (s : store) (tag : string) = List.mem tag s.tags
+
+let%specification never_tagged (s : store) (tag : string) =
+  List.for_all (fun t -> t <> tag) s.tags
+
+(* The element beside the item it is an element of: the item is one further out from
+   inside the collection of its tags. *)
+let%specification has_an_item_tagged_with_its_name (s : store) =
+  List.exists (fun (item : item) -> List.mem item.name item.tags) s.items
+
+(* What an element that may be none holds. *)
+let%specification has_a_size_above (s : store) (size : int64) =
+  List.exists
+    (fun held -> Option.fold ~none:false ~some:(fun known -> known > size) held)
+    s.sizes
 
 (* The constants of a specification are its parameters: what the reference keeps as the
    fields of a specification type. *)
@@ -176,6 +207,15 @@ let the_tree_of_a_predicate () =
           (and_
              (lt (age ()) (add (int64 25L) (int64 100L)))
              (eq (field "name") (text "MyStore"))) );
+      ("tagged", tagged_ast "sale", any "tags" (eq itself (text "sale")));
+      ("tagged_as", tagged_as_ast "sale", any "tags" (eq itself (text "sale")));
+      ("never_tagged", never_tagged_ast "sale", all "tags" (ne itself (text "sale")));
+      ( "has_an_item_tagged_with_its_name",
+        has_an_item_tagged_with_its_name_ast,
+        any "items" (any_at (Path.item "tags") (eq itself (outer 1 "name"))) );
+      ( "has_a_size_above",
+        has_a_size_above_ast 3L,
+        any "sizes" (and_ (is_not_null itself) (gt itself (int64 3L))) );
       (* A comparison with none is the null test, in the tree as in OCaml. *)
       ("closed", closed_ast, is_not_null (field "closed_at"));
       ("closed_on", closed_on_ast, eq (field "closed_at") (int64 1_700_000_000L));
@@ -230,12 +270,15 @@ let opt_text = Value.of_option Value.of_string
 
 let profile_context (p : profile) : Value.t Context.t =
   {
-    field = (function "age" -> Ok (Value.Int p.age) | name -> missing name);
+    field =
+      (function
+      | "age" -> Ok (Value.Int p.age)
+      | name -> missing name);
     object_ = missing;
     collection = missing;
   }
 
-let item_context (i : item) : Value.t Context.t =
+let rec item_context (i : item) : Value.t Context.t =
   {
     field =
       (function
@@ -245,15 +288,23 @@ let item_context (i : item) : Value.t Context.t =
       | "discount" -> Ok (opt_int i.discount)
       | name -> missing name);
     object_ = missing;
-    collection = missing;
+    collection =
+      (function
+      | "tags" -> Ok (List.map (fun tag -> Context.Value (Value.Text tag)) i.tags)
+      | name -> missing name);
   }
+
+(* An item of a collection of objects. *)
+and object_ (i : item) = Context.Object (item_context i)
 
 let category_context (c : category) : Value.t Context.t =
   {
     field = missing;
     object_ = missing;
     collection =
-      (function "items" -> Ok (List.map item_context c.items) | name -> missing name);
+      (function
+      | "items" -> Ok (List.map object_ c.items)
+      | name -> missing name);
   }
 
 let store_context (s : store) : Value.t Context.t =
@@ -266,23 +317,31 @@ let store_context (s : store) : Value.t Context.t =
       | "closed_at" -> Ok (opt_int s.closed_at)
       | "alias" -> Ok (opt_text s.alias)
       | name -> missing name);
-    object_ = (function "owner" -> Ok (profile_context s.owner) | name -> missing name);
+    object_ =
+      (function
+      | "owner" -> Ok (profile_context s.owner)
+      | name -> missing name);
     collection =
       (function
-      | "items" -> Ok (List.map item_context s.items)
-      | "categories" -> Ok (List.map category_context s.categories)
+      | "items" -> Ok (List.map object_ s.items)
+      | "categories" ->
+          Ok (List.map (fun c -> Context.Object (category_context c)) s.categories)
+      (* Elements of collections of values, given by value. *)
+      | "tags" -> Ok (List.map (fun tag -> Context.Value (Value.Text tag)) s.tags)
+      | "sizes" -> Ok (List.map (fun size -> Context.Value (opt_int size)) s.sizes)
       | name -> missing name);
   }
 
 let stores =
-  (* A dear item has a discount, of a tenth of its price. *)
+  (* A dear item has a discount, of a tenth of its price, and is tagged with its name. *)
   let item name price active =
+    let dear = Int64.compare price 100L > 0 in
     {
       name;
       price;
       active;
-      discount =
-        (if Int64.compare price 100L > 0 then Some (Int64.div price 10L) else None);
+      discount = (if dear then Some (Int64.div price 10L) else None);
+      tags = (if dear then [ "dear"; name ] else [ "cheap" ]);
     }
   in
   [
@@ -295,6 +354,8 @@ let stores =
       owner = { age = 30L };
       items = [ item "Laptop" 999L true; item "Mouse" 29L true ];
       categories = [ { items = [ item "Laptop" 999L true ] } ];
+      tags = [ "sale"; "new" ];
+      sizes = [ Some 1L; Some 5L ];
     };
     {
       name = "Pen";
@@ -305,6 +366,8 @@ let stores =
       owner = { age = 17L };
       items = [ item "Pen" 2L false; item "Ink" 900L false ];
       categories = [ { items = [] }; { items = [ item "Pen" 2L true ] } ];
+      tags = [ "new" ];
+      sizes = [ None; Some 2L ];
     };
     {
       name = "";
@@ -315,6 +378,8 @@ let stores =
       owner = { age = 125L };
       items = [];
       categories = [];
+      tags = [];
+      sizes = [ None ];
     };
   ]
 
@@ -398,7 +463,28 @@ let the_function_and_its_tree_agree () =
     [ 2L; 500L ];
   List.iter
     (fun alias -> agree "known_as" (fun s -> known_as s alias) (known_as_ast alias))
-    [ None; Some "Pens"; Some "Inks" ]
+    [ None; Some "Pens"; Some "Inks" ];
+  List.iter
+    (fun tag ->
+      agree (Printf.sprintf "tagged %s" tag) (fun s -> tagged s tag) (tagged_ast tag);
+      agree
+        (Printf.sprintf "tagged_as %s" tag)
+        (fun s -> tagged_as s tag)
+        (tagged_as_ast tag);
+      agree
+        (Printf.sprintf "never_tagged %s" tag)
+        (fun s -> never_tagged s tag)
+        (never_tagged_ast tag))
+    [ "sale"; "new"; "dear" ];
+  agree "has_an_item_tagged_with_its_name" has_an_item_tagged_with_its_name
+    has_an_item_tagged_with_its_name_ast;
+  List.iter
+    (fun size ->
+      agree
+        (Printf.sprintf "has_a_size_above %Ld" size)
+        (fun s -> has_a_size_above s size)
+        (has_a_size_above_ast size))
+    [ 0L; 3L; 5L ]
 
 let compiled specification =
   match Pg.compile specification with
@@ -438,7 +524,11 @@ let the_tree_compiles_to_a_query () =
   Alcotest.(check (list value_t))
     "params"
     [ Value.Int 500L; Value.Null; Value.Null ]
-    query.params
+    query.params;
+  (* An element of an array of a scalar type is its [unnest]'s alias. *)
+  Alcotest.(check string)
+    "tagged as" {|EXISTS (SELECT 1 FROM unnest("tags") AS "tag_1" WHERE "tag_1" = $1)|}
+    (compiled (tagged_as_ast "sale")).sql
 
 (* What cannot be a tree is reported where it stands, and the function stays: the second
    item of the expansion is the error. *)
@@ -453,8 +543,7 @@ let error_of source =
       | [
        _;
        ({ pstr_desc = Pstr_extension (({ txt = "ocaml.error"; _ }, _), _); _ } as error);
-      ] ->
-          Pprintast.string_of_structure [ error ]
+      ] -> Pprintast.string_of_structure [ error ]
       | [ _; _ ] -> Alcotest.failf "a tree was made of: %s" source
       | _ -> Alcotest.fail "two items")
   | _ -> Alcotest.fail "one binding"
@@ -491,6 +580,11 @@ let what_cannot_be_a_tree_is_reported_where_it_stands () =
       ("let f (u : user) = List.exists check u.items", "takes the item");
       ( "let f (u : user) = List.exists (fun i -> i.a > 1L) [ 1L ]",
         "a collection of a specification is a member" );
+      ( "let f (u : user) = List.exists (fun i -> i.a > 1L) u",
+        "the candidate itself is not a collection" );
+      ( "let f (u : user) = List.exists (fun i -> List.exists (fun j -> j > 1L) i) u.items",
+        "an item itself is not a collection" );
+      ("let f (u : user) = List.memq u.a u.items", "physical equality");
       ("let f (u : user) = if u.a then true else false", "not expressible");
       ("let f (u : user) = u.a lsr 1", "a logical shift");
       ("let f (u : user) = u.a == u.b", "physical equality");

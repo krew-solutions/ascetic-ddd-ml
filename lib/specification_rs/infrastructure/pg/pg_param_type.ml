@@ -37,7 +37,9 @@ end
 module Of_value : S with type t = Value.t = struct
   type t = Value.t
 
-  let nul_in_text = function Value.Text text -> String.contains text '\000' | _ -> false
+  let nul_in_text = function
+    | Value.Text text -> String.contains text '\000'
+    | _ -> false
 
   let param_type = function
     | Value.Null -> None
@@ -63,7 +65,10 @@ let under_prefix ~param_type (op : Operator.prefix) operand =
   | Ast.Value value -> (
       match param_type value with
       | Some said -> Some said
-      | None -> ( match op with Neg -> Some "bigint" | Not -> None))
+      | None -> (
+          match op with
+          | Neg -> Some "bigint"
+          | Not -> None))
   | _ -> None
 
 (* Whether [right] is the count of a shift that must be said an integer. A constant there
@@ -71,7 +76,11 @@ let under_prefix ~param_type (op : Operator.prefix) operand =
    an expression has a type of its own, which the server will not convert, so it is
    cast. *)
 let is_a_count_to_cast op right =
-  is_shift op && match right with Ast.Value _ -> false | _ -> true
+  is_shift op
+  &&
+  match right with
+  | Ast.Value _ -> false
+  | _ -> true
 
 (* The type to say of the operand of a null test, if it is a constant. Of what type a null
    is tested does not matter, and the server must be told one: "could not determine data
@@ -79,7 +88,9 @@ let is_a_count_to_cast op right =
 let under_postfix ~param_type operand =
   match operand with
   | Ast.Value value -> (
-      match param_type value with Some said -> Some said | None -> Some "text")
+      match param_type value with
+      | Some said -> Some said
+      | None -> Some "text")
   | _ -> None
 
 (* The types to say of the operands of [op], if both are constants: neither has anything

@@ -496,7 +496,9 @@ let the_values_of_a_tree_can_be_mapped () =
   in
   let doubled =
     Ast.try_map_values
-      (function Value.Int n -> Ok (Int64.mul n 2L) | other -> Error (Value.show other))
+      (function
+        | Value.Int n -> Ok (Int64.mul n 2L)
+        | other -> Error (Value.show other))
       specification
   in
   Alcotest.(check (result int_tree string))
@@ -505,7 +507,9 @@ let the_values_of_a_tree_can_be_mapped () =
     doubled;
   let refused =
     Ast.try_map_values
-      (function Value.Int n -> Ok n | other -> Error (Value.show other))
+      (function
+        | Value.Int n -> Ok n
+        | other -> Error (Value.show other))
       (eq (text "x") (int 1))
   in
   Alcotest.(check (result int_tree string)) "refused" (Error "(Text \"x\")") refused
@@ -629,6 +633,47 @@ let a_date_is_days_since_the_unix_epoch () =
     ];
   Alcotest.(check bool) "ordered" true (Value.Date.compare (days 1) (days 2) < 0)
 
+(* A collection of values - the groups a policy targets - has elements with no members to
+   name: the element is the item itself. A null element is null to a comparison, and no
+   witness. An object has no value of its own, and a value no members. *)
+let an_element_of_a_collection_of_values_is_the_item_itself () =
+  let policy =
+    Record.(
+      to_context
+        (object_
+           [
+             ("name", value (Value.Text "sale"));
+             ( "tags",
+               collection
+                 [ value (Value.Text "sale"); value Value.Null; value (Value.Text "new") ]
+             );
+             ("sizes", collection [ value (Value.of_int 1); value (Value.of_int 5) ]);
+             ("limits", collection [ value (Value.of_int 5) ]);
+             ("items", collection [ object_ [ ("price", value (Value.of_int 1)) ] ]);
+           ]))
+  in
+  let tagged tag = any "tags" (eq itself (text tag)) in
+  Alcotest.check satisfied "new" (Ok true) (E.is_satisfied_by (tagged "new") policy);
+  Alcotest.check satisfied "old" (Ok false) (E.is_satisfied_by (tagged "old") policy);
+  Alcotest.check satisfied "none old" (Ok true)
+    (E.is_satisfied_by (all "tags" (ne itself (text "old"))) policy);
+  Alcotest.check satisfied "a null tag" (Ok true)
+    (E.is_satisfied_by (any "tags" (is_null itself)) policy);
+  (* The candidate beside the element, and the element of an enclosing collection from
+     inside another. *)
+  Alcotest.check satisfied "named as the policy" (Ok true)
+    (E.is_satisfied_by (any "tags" (eq itself (field "name"))) policy);
+  Alcotest.check satisfied "a size that is a limit" (Ok true)
+    (E.is_satisfied_by (any "limits" (any "sizes" (eq itself (outer_itself 1)))) policy);
+  Alcotest.check evaluated "an object itself"
+    (Error (Evaluate.Context (Context.Not_a_value "items[*]")))
+    (E.evaluate (any "items" (eq itself (int 1))) policy);
+  Alcotest.check evaluated "a member of a value"
+    (Error (Evaluate.Context (Context.Not_an_object "tags[*]")))
+    (E.evaluate (any "tags" (eq (item "code") (int 1))) policy);
+  Alcotest.check evaluated "outside" (Error Evaluate.No_current_item)
+    (E.evaluate itself policy)
+
 let () =
   let case name f = Alcotest.test_case name `Quick f in
   Alcotest.run "specification"
@@ -688,5 +733,7 @@ let () =
           case "the item of an enclosing collection is named by how far out it is"
             the_item_of_an_enclosing_collection_is_named_by_how_far_out_it_is;
           case "the predicate of any is a boolean" the_predicate_of_any_is_a_boolean;
+          case "an element of a collection of values is the item itself"
+            an_element_of_a_collection_of_values_is_the_item_itself;
         ] );
     ]

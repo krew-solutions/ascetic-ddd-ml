@@ -45,6 +45,5 @@ let singular word =
                 when not
                        (List.exists
                           (fun e -> String.ends_with ~suffix:e stem)
-                          [ "s"; "u"; "i" ]) ->
-                  stem
+                          [ "s"; "u"; "i" ]) -> stem
               | _ -> word))

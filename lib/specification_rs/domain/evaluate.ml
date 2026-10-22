@@ -15,8 +15,12 @@ let ( let* ) = Result.bind
 
 module Make (O : Operand.S) = struct
   (* The item of one collection's predicate, inside the item of the enclosing
-     collection's. *)
-  type frame = { context : O.t Context.t; outer : frame option }
+     collection's; the collection by its name, for an error to say. *)
+  type frame = {
+    element : O.t Context.element;
+    collection : string;
+    outer : frame option;
+  }
 
   (* What the roots of a path stand for at this point of the tree. Entering a collection
      makes a new scope rather than changing this one: the sources' [_with_item]. *)
@@ -30,12 +34,18 @@ module Make (O : Operand.S) = struct
       | Some value -> Ok (Some value)
       | None -> Error (Not_boolean (O.kind value))
 
-  let of_truth = function None -> O.null | Some value -> O.of_bool value
+  let of_truth = function
+    | None -> O.null
+    | Some value -> O.of_bool value
 
   (* Three-valued [AND] and [OR]. [deciding] is the value that settles the result
      whatever the other side is: false for [AND], true for [OR]. *)
   let connective (op : Operator.logical) left right =
-    let deciding = match op with And -> false | Or -> true in
+    let deciding =
+      match op with
+      | And -> false
+      | Or -> true
+    in
     if left = Some deciding then Ok left
     else
       let* right = right () in
@@ -66,24 +76,38 @@ module Make (O : Operand.S) = struct
     | other -> Operand other
 
   (* The item [up] collections out from the item under test. *)
-  let rec item_out frame up =
+  let rec frame_out frame up =
     match (frame, up) with
     | None, _ -> Error No_current_item
-    | Some frame, 0 -> Ok frame.context
-    | Some frame, up -> item_out frame.outer (up - 1)
+    | Some frame, 0 -> Ok frame
+    | Some frame, up -> frame_out frame.outer (up - 1)
 
-  (* The context that has the member the path names. *)
+  (* The context that has the member the path names. An item that is a value has no
+     members: a member named of it is [Not_an_object], of the collection's items. *)
   let owner path scope =
     let* root =
       match Path.root path with
       | Global -> Ok scope.global
-      | Item up -> item_out scope.item up
+      | Item up -> (
+          let* frame = frame_out scope.item up in
+          match frame.element with
+          | Context.Object context -> Ok context
+          | Context.Value _ ->
+              Error (Context (Context.Not_an_object (frame.collection ^ "[*]"))))
     in
     List.fold_left
       (fun context name ->
         let* (context : O.t Context.t) = context in
         Result.map_error (fun error -> Context error) (context.object_ name))
       (Ok root) (Path.objects path)
+
+  (* The item [up] collections out itself: a value, or no value to give - an object has
+     members to name, and is [Not_a_value], of the collection's items. *)
+  let itself up scope =
+    let* frame = frame_out scope.item up in
+    match frame.element with
+    | Context.Value value -> Ok value
+    | Context.Object _ -> Error (Context (Context.Not_a_value (frame.collection ^ "[*]")))
 
   (* A string constant beside a value of a kind that has no literal of its own - a point
      in time, a date, a UUID - is read as that kind, as the server reads an untyped
@@ -110,6 +134,7 @@ module Make (O : Operand.S) = struct
     | Field path ->
         let* owner = owner path scope in
         Result.map_error (fun error -> Context error) (owner.field (Path.name path))
+    | Item up -> itself up scope
     | Prefix (Not, operand) ->
         let* operand = eval operand scope in
         let* truth = truth operand in
@@ -151,24 +176,26 @@ module Make (O : Operand.S) = struct
         |> Result.map_error (named (Operator.arithmetic_to_string op))
     | Any (source, predicate) ->
         let* owner = owner source scope in
-        let* items =
+        let* elements =
           Result.map_error
             (fun error -> Context error)
             (owner.collection (Path.name source))
         in
-        let witness item =
-          let scope = { scope with item = Some { context = item; outer = scope.item } } in
-          let* value = eval predicate scope in
+        let witness element =
+          let frame = { element; collection = Path.name source; outer = scope.item } in
+          let* value = eval predicate { scope with item = Some frame } in
           let* truth = truth value in
           Ok (truth = Some true)
         in
         (* The first witness decides; so does the first failure. *)
         let rec any = function
           | [] -> Ok false
-          | item :: items -> (
-              match witness item with Ok false -> any items | decided -> decided)
+          | element :: elements -> (
+              match witness element with
+              | Ok false -> any elements
+              | decided -> decided)
         in
-        Result.map O.of_bool (any items)
+        Result.map O.of_bool (any elements)
 
   (* Whether [operand] is null. A member is asked about whatever it is: an object that is
      there is not null, though it is no value - the guard a host-language frontend writes

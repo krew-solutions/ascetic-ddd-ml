@@ -46,3 +46,7 @@ let rec traverse f = function
 (* A table's name, which may carry its schema: [public.items] is ["public"."items"]. *)
 let qualified name =
   Result.map (String.concat ".") (traverse identifier (String.split_on_char '.' name))
+
+(* The key of a member of a document, as a literal of the query: a name of the alphabet
+   of names, so that nothing ends the literal. *)
+let key name = Result.map (fun plain -> "'" ^ plain ^ "'") (plain name)

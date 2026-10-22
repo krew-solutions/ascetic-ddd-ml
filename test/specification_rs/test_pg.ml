@@ -45,8 +45,7 @@ let ids conn sql params =
 let sqlstate_of : Caqti_error.t -> string option = function
   | `Request_failed { msg = Caqti_driver_postgresql.Result_error_msg { sqlstate; _ }; _ }
   | `Response_failed { msg = Caqti_driver_postgresql.Result_error_msg { sqlstate; _ }; _ }
-    ->
-      Some sqlstate
+    -> Some sqlstate
   | _ -> None
 
 let with_connection env uri f () =
@@ -77,21 +76,32 @@ let satisfied evaluate specification rows =
 
 let int64s = Alcotest.(list int64)
 
+(* The plan of a query, as [EXPLAIN] writes it. *)
+let plan conn sql params =
+  match collect conn Caqti_type.string sql params with
+  | Ok lines -> String.concat "\n" lines
+  | Error error -> fail_caqti sql error
+
+let contains text part =
+  let n = String.length part in
+  let rec at i =
+    i + n <= String.length text && (String.sub text i n = part || at (i + 1))
+  in
+  at 0
+
 (* A mapping that renames every name of a path by one rule, and leaves the values: the
    storage's name of a member, whatever leads to it. *)
 let renamed rename : (Value.t, Value.t, string) Mapping.t =
-  {
-    field =
-      (fun path ->
-        match List.map rename (Path.names path) with
-        | [] -> Error "an empty path"
-        | first :: rest ->
-            Ok
-              (Scalar
-                 (Field
-                    (List.fold_left Path.child (Path.make (Path.root path) first) rest))));
-    value = (fun value -> Ok (Scalar (Value value)));
-  }
+  Mapping.make
+    ~field:(fun path ->
+      match List.map rename (Path.names path) with
+      | [] -> Error "an empty path"
+      | first :: rest ->
+          Ok
+            (Scalar
+               (Field (List.fold_left Path.child (Path.make (Path.root path) first) rest))))
+    ~value:(fun value -> Ok (Scalar (Value value)))
+    ()
 
 (* ------------------------------------------------------------------------ *)
 (* Constants                                                                 *)
@@ -243,7 +253,11 @@ let a_constant_expression_has_one_value_for_both_readers conn =
         Printf.sprintf "SELECT (%s) IS NOT DISTINCT FROM $%d" query.sql
           (List.length query.params + 1)
       in
-      let expected = match evaluated with Ok value -> value | Error _ -> Value.Null in
+      let expected =
+        match evaluated with
+        | Ok value -> value
+        | Error _ -> Value.Null
+      in
       let answered = find conn Caqti_type.bool text (query.params @ [ expected ]) in
       match (evaluated, answered) with
       | Ok value, Ok agreed ->
@@ -304,6 +318,17 @@ let owner_of = function
   | Some false -> (2L, Some "bob")
   | None -> (3L, None)
 
+(* The store's tags: a collection of values, kept as an array of text and in the document
+   as an array of strings. A tag may be null. *)
+let tags_of store =
+  match store.id with
+  | 1L -> [ Some "sale"; Some "new" ]
+  | 2L -> [ Some "new"; None; Some "cheap" ]
+  | 3L -> []
+  | 4L -> [ Some "sale"; Some "four" ]
+  | 5L -> [ None ]
+  | _ -> [ Some "dear"; Some "sale" ]
+
 let stores =
   let item price active = { price; active } in
   let store id a b flag name items = { id; a; b; flag; name; items } in
@@ -347,6 +372,8 @@ let record store =
            ("flag", value (opt_bool store.flag));
            ("name", value (opt_text store.name));
            ("items", collection items);
+           ( "tags",
+             collection (List.map (fun tag -> value (opt_text tag)) (tags_of store)) );
            ("owner", object_ [ ("name", value (opt_text (snd (owner_of store.flag)))) ]);
            (* Members named as PostgreSQL names other things, under columns of those very
               names: [user] is the session's user if it is not quoted, [order] does not
@@ -356,9 +383,20 @@ let record store =
            ("createdAt", value (opt_int store.b));
          ]))
 
-let lit_int = function None -> "NULL::int8" | Some i -> Printf.sprintf "%Ld::int8" i
-let lit_bool = function None -> "NULL::bool" | Some b -> Printf.sprintf "%b::bool" b
-let lit_text = function None -> "NULL::text" | Some s -> Printf.sprintf "'%s'::text" s
+let lit_int = function
+  | None -> "NULL::int8"
+  | Some i -> Printf.sprintf "%Ld::int8" i
+let lit_bool = function
+  | None -> "NULL::bool"
+  | Some b -> Printf.sprintf "%b::bool" b
+let lit_text = function
+  | None -> "NULL::text"
+  | Some s -> Printf.sprintf "'%s'::text" s
+
+let lit_texts = function
+  | [] -> "ARRAY[]::text[]"
+  | texts ->
+      Printf.sprintf "ARRAY[%s]::text[]" (String.concat ", " (List.map lit_text texts))
 
 let tables conn =
   exec_all conn
@@ -370,7 +408,7 @@ let tables conn =
       "INSERT INTO spec_owners VALUES (1, 'ann'), (2, 'bob'), (3, NULL)";
       "CREATE TEMP TABLE spec_stores (id int8 PRIMARY KEY, a int8, b int8, flag bool, \
        name text, items pg_temp.spec_item[] NOT NULL, \"user\" text, \"order\" int8, \
-       \"createdAt\" int8, owner_id int8)";
+       \"createdAt\" int8, owner_id int8, tags text[] NOT NULL)";
       "CREATE TEMP TABLE spec_items (store_id int8 NOT NULL, price int8, active bool, \
        maker pg_temp.spec_maker, owner_id int8 REFERENCES spec_owners)";
     ];
@@ -378,10 +416,12 @@ let tables conn =
     (fun store ->
       exec conn
         (Printf.sprintf
-           "INSERT INTO spec_stores VALUES (%Ld, %s, %s, %s, %s, '{}', %s, %s, %s, %Ld)"
+           "INSERT INTO spec_stores VALUES (%Ld, %s, %s, %s, %s, '{}', %s, %s, %s, %Ld, \
+            %s)"
            store.id (lit_int store.a) (lit_int store.b) (lit_bool store.flag)
            (lit_text store.name) (lit_text store.name) (lit_int store.a) (lit_int store.b)
-           (fst (owner_of store.flag)));
+           (fst (owner_of store.flag))
+           (lit_texts (tags_of store)));
       List.iter
         (fun item ->
           let row =
@@ -399,6 +439,78 @@ let tables conn =
             (Printf.sprintf "INSERT INTO spec_items VALUES (%Ld, %s)" store.id row))
         store.items)
     stores
+
+(* What the stores' documents hold: a store as one [jsonb] document, the owner and the
+   maker objects in it, the items an array of objects in it, the tags an array of
+   strings. *)
+let store_layout () =
+  let named () = Pg.Layout.(empty |> value "name" Kind.Text) in
+  Pg.Layout.(
+    empty |> value "a" Kind.Int |> value "b" Kind.Int |> value "flag" Kind.Bool
+    |> value "name" Kind.Text |> value "user" Kind.Text |> value "order" Kind.Int
+    |> value "createdAt" Kind.Int |> values "tags" Kind.Text
+    |> object_ "owner" (named ())
+    |> collection "items"
+         (empty |> value "price" Kind.Int |> value "active" Kind.Bool
+         |> object_ "maker" (named ())
+         |> object_ "owner" (named ())))
+
+(* The stores as documents, and beside each document two of its members as columns the
+   server generates from it: what a listing would filter by with a btree index of its
+   own. *)
+let documents conn =
+  exec_all conn
+    [
+      "CREATE TEMP TABLE spec_documents (id int8 PRIMARY KEY, a int8 GENERATED ALWAYS AS \
+       ((document ->> 'a')::bigint) STORED, flag bool GENERATED ALWAYS AS ((document ->> \
+       'flag')::boolean) STORED, document jsonb NOT NULL)";
+      "CREATE INDEX ON spec_documents USING gin (document jsonb_path_ops)";
+      "CREATE INDEX ON spec_documents USING gin ((document -> 'tags'))";
+    ];
+  List.iter
+    (fun store ->
+      exec conn
+        (Printf.sprintf
+           "INSERT INTO spec_documents (id, document) VALUES (%Ld, \
+            jsonb_build_object('a', %s, 'b', %s, 'flag', %s, 'name', %s, 'owner', \
+            jsonb_build_object('name', %s), 'items', '[]'::jsonb, 'user', %s, 'order', \
+            %s, 'createdAt', %s, 'tags', to_jsonb(%s)))"
+           store.id (lit_int store.a) (lit_int store.b) (lit_bool store.flag)
+           (lit_text store.name)
+           (lit_text (snd (owner_of store.flag)))
+           (lit_text store.name) (lit_int store.a) (lit_int store.b)
+           (lit_texts (tags_of store)));
+      List.iter
+        (fun item ->
+          exec conn
+            (Printf.sprintf
+               "UPDATE spec_documents SET document = jsonb_set(document, '{items}', \
+                document -> 'items' || jsonb_build_array(jsonb_build_object('price', %s, \
+                'active', %s, 'maker', jsonb_build_object('name', %s), 'owner', \
+                jsonb_build_object('name', %s)))) WHERE id = %Ld"
+               (lit_int item.price) (lit_bool item.active)
+               (lit_text (maker_name item))
+               (lit_text (snd (owner_of item.active)))
+               store.id))
+        store.items)
+    stores
+
+(* A mapping to a document: a member is the member at the same path in the column
+   [document], unless it is one of the members kept as columns of their own beside the
+   document. *)
+let in_the_document beside : (Value.t, Value.t, string) Mapping.t =
+  Mapping.make
+    ~field:(fun path ->
+      let storage =
+        if Path.objects path = [] && List.mem (Path.name path) beside then path
+        else
+          List.fold_left Path.child
+            (Path.make (Path.root path) "document")
+            (Path.names path)
+      in
+      Ok (Scalar (Field storage)))
+    ~value:(fun value -> Ok (Scalar (Value value)))
+    ()
 
 let bound source params =
   match Jsonpath.Template.bind (Jsonpath.Template.parse_exn source) params with
@@ -474,10 +586,43 @@ let specifications () =
     bound "$[?@.a == %d || @.name == %s]" (positional [ Value.Int 1L; Value.Null ]);
     bound "$.items[*][?@.price == %s]" (positional [ Value.Null ]);
     bound "$.items[*][?@.active != null && @.price > 500]" Jsonpath.Params.none;
+    (* Equalities where only truth counts and where it does not: what a GIN index on a
+       document has them written as containment, and not. *)
+    not_ (eq (field "name") (text "one"));
+    or_ (eq (field "name") (text "one")) (eq (field "a") (int 7));
+    and_ (eq (field "flag") (bool true)) (eq (field "b") (int 1));
+    not_ (and_ (eq (field "flag") (bool true)) (eq (field "b") (int 1)));
+    any "items" (and_ (eq (item "active") (bool true)) (dear ()));
+    any "items" (eq (maker_name ()) (text "cheap"));
+    any "items" (and_ (eq (item "price") (int 900)) (eq (owner_name ()) (text "ann")));
+    any "items" (and_ (eq (item "price") (int 10)) (eq (item "price") (int 900)));
+    not_ (any "items" (eq (item "price") (int 10)));
+    all "items" (eq (item "active") (bool true));
+    or_ (field "flag") (any "items" (eq (item "price") (int 10)));
+    (* Built by hand, [= NULL] is null of every row. *)
+    eq (field "name") null;
+    any "items" (eq (item "active") null);
+    (* A collection of values: its element is the item itself. *)
+    any "tags" (eq itself (text "sale"));
+    not_ (any "tags" (eq itself (text "sale")));
+    all "tags" (ne itself (text "new"));
+    any "tags" (is_null itself);
+    any "tags" (eq itself (field "name"));
+    and_ (field "flag") (any "tags" (eq itself (text "new")));
+    or_ (any "tags" (eq itself (text "cheap"))) (any "tags" (eq itself (text "four")));
+    any "tags" (and_ (eq itself (text "sale")) (eq itself (text "new")));
+    any "tags" (or_ (eq itself (text "cheap")) (eq itself (text "four")));
+    any "tags" (eq itself null);
+    (* The element beside a member of the item of an enclosing collection. *)
+    any "items"
+      (any "tags" (eq itself (field_at (Path.child (Path.outer 1 "maker") "name"))));
+    bound "$.tags[*][?@ == %s]" (positional [ Value.Text "new" ]);
+    bound "$.tags[*][?@ == %s]" (positional [ Value.Null ]);
   ]
 
 let a_specification_selects_the_rows_it_is_satisfied_by conn =
   tables conn;
+  documents conn;
   (* The schema is the storage's keys; the tree reaches the compiler in the storage's
      names, which a mapping gives it: the items are a table of their own in one storage
      and an array in the other, and the owner is named by the key's column in both. *)
@@ -495,23 +640,50 @@ let a_specification_selects_the_rows_it_is_satisfied_by conn =
       |> foreign_key "spec_stores" "owner_id" "spec_owners" "id")
   in
   let in_a_table =
-    renamed (function "items" -> "spec_items" | "owner" -> "owner_id" | name -> name)
+    renamed (function
+      | "items" -> "spec_items"
+      | "owner" -> "owner_id"
+      | name -> name)
   in
-  let in_the_row = renamed (function "owner" -> "owner_id" | name -> name) in
+  let in_the_row =
+    renamed (function
+      | "owner" -> "owner_id"
+      | name -> name)
+  in
+  (* A store as a document, every member read from it; or two of its members read from
+     the columns generated from it, which are what the document says or the two would
+     select other rows. *)
+  let document =
+    Pg.Schema.(
+      make "spec_documents" |> document "spec_documents" "document" (store_layout ()))
+  in
+  let wholly = in_the_document [] and beside = in_the_document [ "a"; "flag" ] in
+  (* The same, the server told the document has a GIN index: equalities where only truth
+     counts are written as containment. And the same, told the tags have a GIN index of
+     their own. *)
+  let indexed = Pg.Schema.gin "spec_documents" "document" document in
+  let tags_indexed = Pg.Schema.gin_at "spec_documents" "document" "tags" document in
   let rows = List.map (fun store -> (store.id, record store)) stores in
   List.iter
     (fun specification ->
       let satisfied = satisfied E.is_satisfied_by specification rows in
       List.iter
-        (fun (storage, schema, mapping) ->
+        (fun (storage, table, schema, mapping) ->
           let query = compiled ~schema (transformed mapping specification) in
           let text =
-            Printf.sprintf "SELECT id FROM spec_stores WHERE %s ORDER BY id" query.sql
+            Printf.sprintf "SELECT id FROM %s WHERE %s ORDER BY id" table query.sql
           in
           Alcotest.check int64s
             (Printf.sprintf "%s: %s" storage text)
             satisfied (ids conn text query.params))
-        [ ("embedded", embedded, in_the_row); ("relational", relational, in_a_table) ])
+        [
+          ("embedded", "spec_stores", embedded, in_the_row);
+          ("relational", "spec_stores", relational, in_a_table);
+          ("document", "spec_documents", document, wholly);
+          ("document and columns", "spec_documents", document, beside);
+          ("document with a GIN index", "spec_documents", indexed, wholly);
+          ("document with a GIN index on its tags", "spec_documents", tags_indexed, wholly);
+        ])
     (specifications ())
 
 (* ------------------------------------------------------------------------ *)
@@ -534,7 +706,9 @@ module Priced = struct
     | No_discount -> true
 
   let of_bool value = Scalar (Value.of_bool value)
-  let to_bool = function Scalar value -> Value.to_bool value | _ -> None
+  let to_bool = function
+    | Scalar value -> Value.to_bool value
+    | _ -> None
 
   let kind = function
     | Scalar value -> Value.kind value
@@ -576,26 +750,24 @@ module Priced_evaluate = Evaluate.Make (Priced)
 (* What the storage has for them: a discount is its percent in a column, and the special
    case is that column's null. *)
 let prices : (Priced.t, Value.t, string) Mapping.t =
-  {
-    field =
-      (fun path ->
-        (* By the whole path from the candidate: the collection, and a member of its item
-           under it. Where the item is, is the tree's. *)
-        match Path.names path with
-        | [ "items" ] -> Ok (Scalar (Field path))
-        | [ "items"; "discount" ] ->
-            Ok (Scalar (Field (Path.sibling path "discount_percent")))
-        | names -> Error ("no such member: " ^ String.concat "." names));
-    value =
-      (fun value ->
-        Ok
-          (Scalar
-             (Value
-                (match value with
-                | Priced.Scalar value -> value
-                | Discount percent -> Value.Int percent
-                | No_discount -> Value.Null))));
-  }
+  Mapping.make
+    ~field:(fun path ->
+      (* By the whole path from the candidate: the collection, and a member of its item
+         under it. Where the item is, is the tree's. *)
+      match Path.names path with
+      | [ "items" ] -> Ok (Scalar (Field path))
+      | [ "items"; "discount" ] ->
+          Ok (Scalar (Field (Path.sibling path "discount_percent")))
+      | names -> Error ("no such member: " ^ String.concat "." names))
+    ~value:(fun value ->
+      Ok
+        (Scalar
+           (Value
+              (match value with
+              | Priced.Scalar value -> value
+              | Discount percent -> Value.Int percent
+              | No_discount -> Value.Null))))
+    ()
 
 (* A Value Object is compared as a whole by the evaluator, and what is not there is a
    special case of it: no path into it, so no member of a null to ask for, and the answer
@@ -655,7 +827,9 @@ module Answering = struct
   type t = Priced.t [@@deriving show, eq]
 
   let null = Priced.null
-  let is_null = function Priced.Scalar value -> Value.is_null value | _ -> false
+  let is_null = function
+    | Priced.Scalar value -> Value.is_null value
+    | _ -> false
   let of_bool = Priced.of_bool
   let to_bool = Priced.to_bool
   let kind = Priced.kind
@@ -678,11 +852,11 @@ module Answering_evaluate = Evaluate.Make (Answering)
 (* The same storage: the special case is the column's null. That it is one the mapping
    says, which [transform] reads where the two are compared for equality. *)
 let answering_prices : (Answering.t, Value.t, string) Mapping.t =
-  {
-    field = prices.field;
-    value =
-      (function Priced.No_discount -> Ok (Null Value.Null) | other -> prices.value other);
-  }
+  Mapping.make ~field:prices.field
+    ~value:(function
+      | Priced.No_discount -> Ok (Null Value.Null)
+      | other -> prices.value other)
+    ()
 
 (* A special case that answers for itself is equal to itself, and the storage has a null
    for it: [discount = $1] with a null is true of nothing, so the server found no shop
@@ -1165,6 +1339,439 @@ let a_string_constant_is_read_as_the_kind_of_the_column_beside_it conn =
        (Printf.sprintf "SELECT id FROM spec_kinds WHERE %s" query.sql)
        query.params)
 
+(* ------------------------------------------------------------------------ *)
+(* Documents                                                                 *)
+
+(* A document does not say the kinds of its members: a point in time, a date and a UUID
+   are strings in it, and a number is one with or without a fraction. Read as the layout
+   says, a member is compared as its kind: a string constant beside it is read as that
+   kind (ADR-0026), as beside a column of that type, and a text is ordered by code point.
+   Compared as the text of the document, the midnight ["2026-09-01T00:00:00.000000Z"]
+   would be greater than ["2026-09-01"], and ["B"] would come after ["a"] in the
+   database's collation. *)
+let a_member_of_a_document_is_compared_as_its_declared_kind conn =
+  exec_all conn
+    [
+      "SET TIME ZONE 'UTC'";
+      "CREATE TEMP TABLE spec_kind_documents (id int8, document jsonb NOT NULL)";
+      {|INSERT INTO spec_kind_documents VALUES (1, '{"at": "2026-09-01T00:00:00.000000Z", "day": "2026-09-01", "uid": "3f2a0c1e-5b7d-4e8a-9f01-23456789abcd", "weight": 0.1, "word": "B"}'), (2, '{"at": "2026-09-02T12:00:00.000000Z", "day": "2026-09-02", "uid": "00000000-0000-0000-0000-000000000001", "weight": 1.0, "word": "a"}'), (3, '{"at": null, "day": null, "uid": null, "weight": null, "word": null}')|};
+    ];
+  let day d = Option.get (Value.Date.of_civil 2026 9 d) in
+  let at d hour =
+    Value.Timestamp
+      (Value.Timestamp.of_micros
+         (Int64.add
+            (Int64.mul (Int64.of_int (Value.Date.to_days (day d))) 86_400_000_000L)
+            (Int64.mul (Int64.of_int hour) 3_600_000_000L)))
+  in
+  let uuid text = Option.get (Uuidm.of_string text) in
+  let ann = uuid "3f2a0c1e-5b7d-4e8a-9f01-23456789abcd" in
+  let row at day uid weight word =
+    Record.(
+      to_context
+        (object_
+           [
+             ("at", value at);
+             ("day", value day);
+             ("uid", value uid);
+             ("weight", value weight);
+             ("word", value word);
+           ]))
+  in
+  let rows =
+    [
+      ( 1L,
+        row (at 1 0)
+          (Value.Date (day 1))
+          (Value.Uuid ann) (Value.Float 0.1) (Value.Text "B") );
+      ( 2L,
+        row (at 2 12)
+          (Value.Date (day 2))
+          (Value.Uuid (uuid "00000000-0000-0000-0000-000000000001"))
+          (Value.Float 1.0) (Value.Text "a") );
+      (3L, row Value.Null Value.Null Value.Null Value.Null Value.Null);
+    ]
+  in
+  let schema =
+    Pg.Schema.(
+      make "spec_kind_documents"
+      |> document "spec_kind_documents" "document"
+           Pg.Layout.(
+             empty |> value "at" Kind.Timestamp |> value "day" Kind.Date
+             |> value "uid" Kind.Uuid |> value "weight" Kind.Float
+             |> value "word" Kind.Text))
+  in
+  List.iter
+    (fun (specification, expected) ->
+      Alcotest.check int64s
+        ("the evaluator: " ^ Ast.show Value.pp specification)
+        expected
+        (satisfied E.is_satisfied_by specification rows);
+      let query = compiled ~schema (transformed (in_the_document []) specification) in
+      let sql =
+        Printf.sprintf "SELECT id FROM spec_kind_documents WHERE %s ORDER BY id" query.sql
+      in
+      Alcotest.check int64s sql expected (ids conn sql query.params))
+    [
+      (gt (field "at") (text "2026-09-01"), [ 2L ]);
+      (ge (field "at") (text "2026-09-01T03:00:00+03:00"), [ 1L; 2L ]);
+      (eq (field "at") (value (at 2 12)), [ 2L ]);
+      (eq (field "day") (text "2026-09-01"), [ 1L ]);
+      (lt (field "day") (value (Value.Date (day 2))), [ 1L ]);
+      (eq (field "uid") (text "3F2A0C1E-5B7D-4E8A-9F01-23456789ABCD"), [ 1L ]);
+      (gt (field "weight") (float 0.5), [ 2L ]);
+      (* An integer beside a number: [1.0] is [1]. *)
+      (eq (field "weight") (int 1), [ 2L ]);
+      (not_ (gt (field "weight") (float 0.5)), [ 1L ]);
+      (lt (field "word") (text "a"), [ 1L ]);
+      (is_null (field "at"), [ 3L ]);
+    ]
+
+(* The text a member of a document is read by is an expression a btree index can be made
+   on, and the server matches the index by it: the cast of a number, the collation of a
+   text. A point in time and a date are not so: their casts depend on the session's
+   settings, and the server refuses an index on them - such a member is a column beside
+   the document. *)
+let an_index_on_the_expression_of_a_member_serves_its_comparisons conn =
+  exec_all conn
+    [
+      "CREATE TEMP TABLE spec_indexed (id int8 PRIMARY KEY, document jsonb NOT NULL)";
+      "INSERT INTO spec_indexed SELECT n, jsonb_build_object('priority', n % 50, \
+       'status', 's' || n, 'at', '2026-09-01T00:00:00.000000Z') FROM generate_series(1, \
+       1000) AS n";
+      "CREATE INDEX spec_indexed_priority ON spec_indexed (((document ->> \
+       'priority')::bigint))";
+      "CREATE INDEX spec_indexed_status ON spec_indexed (((document ->> 'status') \
+       COLLATE \"C\"))";
+      "ANALYZE spec_indexed";
+      "SET enable_seqscan = off";
+    ];
+  let schema =
+    Pg.Schema.(
+      make "spec_indexed"
+      |> document "spec_indexed" "document"
+           Pg.Layout.(empty |> value "priority" Kind.Int |> value "status" Kind.Text))
+  in
+  List.iter
+    (fun (specification, index) ->
+      let query = compiled ~schema specification in
+      let sql = Printf.sprintf "EXPLAIN SELECT id FROM spec_indexed WHERE %s" query.sql in
+      let plan = plan conn sql query.params in
+      Alcotest.(check bool) (sql ^ "\n" ^ plan) true (contains plan index))
+    [
+      (gt (field "document.priority") (int 48), "spec_indexed_priority");
+      (eq (field "document.status") (text "s7"), "spec_indexed_status");
+      (lt (field "document.status") (text "s1"), "spec_indexed_status");
+    ];
+  (* A cast that depends on the session is no expression of an index. *)
+  let (module C : Caqti_eio.CONNECTION) = conn in
+  let refused =
+    "CREATE INDEX spec_indexed_at ON spec_indexed (((document ->> 'at')::timestamptz))"
+  in
+  let open Caqti_request.Infix in
+  match C.exec ((Caqti_type.unit ->. Caqti_type.unit) ~oneshot:true refused) () with
+  | Ok () -> Alcotest.fail "an index on a cast to timestamptz"
+  | Error error ->
+      Alcotest.(check (option string)) refused (Some "42P17") (sqlstate_of error)
+
+(* Where the schema says a document has a GIN index, an equality where only truth counts
+   is containment the index serves: of a member, of members under [OR], of an item of a
+   collection beside its [EXISTS], of an element of an array of values. The pattern is
+   made of immutable functions, which the server folds into a constant for the parameters
+   it is given, where [jsonb_build_object] would be called again for every row a
+   sequential scan reads. *)
+let a_gin_index_serves_the_equalities_where_only_truth_counts conn =
+  exec_all conn
+    [
+      "CREATE TEMP TABLE spec_gin (id int8 PRIMARY KEY, document jsonb NOT NULL)";
+      "INSERT INTO spec_gin SELECT n, jsonb_build_object('status', 's' || n, 'priority', \
+       n % 50, 'versions', jsonb_build_array(jsonb_build_object('number', n % 7)), \
+       'groups', jsonb_build_array('g' || n % 10)) FROM generate_series(1, 1000) AS n";
+      "CREATE INDEX spec_gin_document ON spec_gin USING gin (document jsonb_path_ops)";
+      "ANALYZE spec_gin";
+      "SET enable_seqscan = off";
+    ];
+  let schema =
+    Pg.Schema.(
+      make "spec_gin"
+      |> document "spec_gin" "document"
+           Pg.Layout.(
+             empty |> value "status" Kind.Text |> value "priority" Kind.Int
+             |> collection "versions" (empty |> value "number" Kind.Int)
+             |> values "groups" Kind.Text)
+      |> gin "spec_gin" "document")
+  in
+  let status s = eq (field "document.status") (text s) in
+  List.iter
+    (fun (specification, folded) ->
+      let query = compiled ~schema specification in
+      let sql = Printf.sprintf "EXPLAIN SELECT id FROM spec_gin WHERE %s" query.sql in
+      let plan = plan conn sql query.params in
+      Alcotest.(check bool)
+        (sql ^ "\nthe index:\n" ^ plan)
+        true
+        (contains plan "spec_gin_document");
+      Alcotest.(check bool) (sql ^ "\nfolded:\n" ^ plan) true (contains plan folded))
+    [
+      (status "s7", {|'{"status": "s7"}'::jsonb|});
+      (or_ (status "s7") (status "s8"), {|'{"status": "s8"}'::jsonb|});
+      ( any "document.versions"
+          (and_ (eq (item "number") (int 3)) (lt (item "number") (int 5))),
+        {|'{"versions": [{"number": 3}]}'::jsonb|} );
+      (any "document.groups" (eq itself (text "g7")), {|'{"groups": ["g7"]}'::jsonb|});
+    ]
+
+(* A GIN index on a path of a document, as the services index the subgroups of a group,
+   serves the containment of the value at the path: the compiler writes it of the
+   expression the index is on, and the server folds the pattern into a constant. *)
+let a_gin_index_on_a_path_serves_the_containment_of_the_value_there conn =
+  exec_all conn
+    [
+      "CREATE TEMP TABLE spec_groups (id int8 PRIMARY KEY, document jsonb NOT NULL)";
+      "INSERT INTO spec_groups SELECT n, jsonb_build_object('subgroups', \
+       jsonb_build_array('s' || n % 1000, 's' || n % 997)) FROM generate_series(1, 1000) \
+       AS n";
+      "CREATE INDEX spec_groups_subgroups ON spec_groups USING gin ((document -> \
+       'subgroups'))";
+      "ANALYZE spec_groups";
+      "SET enable_seqscan = off";
+    ];
+  let plain =
+    Pg.Schema.(
+      make "spec_groups"
+      |> document "spec_groups" "document"
+           Pg.Layout.(empty |> values "subgroups" Kind.Text))
+  in
+  let at_subgroups = Pg.Schema.gin_at "spec_groups" "document" "subgroups" plain in
+  let nesting = any "document.subgroups" (eq itself (text "s7")) in
+  let query = compiled ~schema:at_subgroups nesting in
+  let sql = Printf.sprintf "EXPLAIN SELECT id FROM spec_groups WHERE %s" query.sql in
+  let plan = plan conn sql query.params in
+  Alcotest.(check bool)
+    (sql ^ "\nthe index:\n" ^ plan)
+    true
+    (contains plan "spec_groups_subgroups");
+  Alcotest.(check bool)
+    (sql ^ "\nfolded:\n" ^ plan)
+    true
+    (contains plan {|'["s7"]'::jsonb|});
+  (* The rows are those of the same condition written without the index. *)
+  let selected (query : Value.t Pg.query) =
+    ids conn
+      (Printf.sprintf "SELECT id FROM spec_groups WHERE %s ORDER BY id" query.sql)
+      query.params
+  in
+  let indexed = selected query
+  and unindexed = selected (compiled ~schema:plain nesting) in
+  Alcotest.check int64s "the same rows" unindexed indexed;
+  Alcotest.(check bool) "some rows" true (indexed <> [])
+
+(* The values of a domain whose groups are tenant-scoped: a group is its tenant and its
+   key, and equal to a group of another tenant with the same key it is not. *)
+module Scoped = struct
+  type t = Scalar of Value.t | Group of int64 * string [@@deriving show, eq]
+
+  let null = Scalar Value.Null
+  let is_null = function
+    | Scalar value -> Value.is_null value
+    | Group _ -> false
+  let of_bool value = Scalar (Value.of_bool value)
+  let to_bool = function
+    | Scalar value -> Value.to_bool value
+    | Group _ -> None
+  let kind = function
+    | Scalar value -> Value.kind value
+    | Group _ -> "group"
+
+  let equals left right =
+    match (left, right) with
+    | Scalar left, Scalar right -> Value.equals left right
+    | Group _, Group _ -> Ok (equal left right)
+    | _ -> Error (Operand.unsupported "=" (kind left) (kind right))
+
+  let compare left right =
+    match (left, right) with
+    | Scalar left, Scalar right -> Value.compare left right
+    | _ -> Error (Operand.unsupported "<" (kind left) (kind right))
+
+  let negate value = Error (Operand.unsupported_unary "-" (kind value))
+
+  let compute op left right =
+    Error
+      (Operand.unsupported (Operator.arithmetic_to_string op) (kind left) (kind right))
+
+  let read_beside this other =
+    match (this, other) with
+    | Scalar this, Scalar other ->
+        Result.map (Option.map (fun value -> Scalar value)) (Value.read_beside this other)
+    | _ -> Ok None
+end
+
+module Scoped_evaluate = Evaluate.Make (Scoped)
+
+(* What the storage keeps of a policy's groups: the keys in its document's array, the
+   tenant once, in its row. *)
+let groups : (Scoped.t, Value.t, string) Mapping.t =
+  Mapping.make
+    ~field:(fun path ->
+      match Path.names path with
+      | [ "tenant_id" ] -> Ok (Mapping.Scalar (field "tenant_id"))
+      | [ "groups" ] -> Ok (Mapping.Scalar (field "document.groups"))
+      | names -> Error ("unknown field: " ^ String.concat "." names))
+    ~value:(function
+      | Scoped.Scalar value -> Ok (Mapping.Scalar (Value value))
+      | Group (tenant, key) ->
+          Ok
+            (Mapping.Composite
+               [ Scalar (Value (Value.Int tenant)); Scalar (Value (Value.Text key)) ]))
+    ~element:(fun collection ->
+      match Path.names collection with
+      | [ "groups" ] ->
+          Ok (Mapping.Composite [ Scalar (field "tenant_id"); Scalar itself ])
+      | names -> Error ("no collection of values: " ^ String.concat "." names))
+    ()
+
+(* A group the domain holds as its tenant and its key, and the storage as the key in the
+   array and the tenant in the row, is compared part by part: a group of another tenant
+   with the same key is not targeted, in memory as in the database - where a group mapped
+   to its key alone was. *)
+let an_element_kept_in_part_in_the_candidates_row_is_compared_part_by_part conn =
+  exec_all conn
+    [
+      "CREATE TEMP TABLE spec_policies (id int8, tenant_id int8, document jsonb NOT NULL)";
+      {|INSERT INTO spec_policies VALUES (1, 1, '{"groups": ["k1", "k2"]}'), (2, 2, '{"groups": ["k1"]}'), (3, 1, '{"groups": []}'), (4, 2, '{"groups": ["k2"]}')|};
+    ];
+  let policy tenant keys =
+    Record.(
+      to_context
+        (object_
+           [
+             ("tenant_id", value (Scoped.Scalar (Value.Int tenant)));
+             ( "groups",
+               collection (List.map (fun key -> value (Scoped.Group (tenant, key))) keys)
+             );
+           ]))
+  in
+  let rows =
+    [
+      (1L, policy 1L [ "k1"; "k2" ]);
+      (2L, policy 2L [ "k1" ]);
+      (3L, policy 1L []);
+      (4L, policy 2L [ "k2" ]);
+    ]
+  in
+  let schema =
+    Pg.Schema.(
+      make "spec_policies"
+      |> document "spec_policies" "document"
+           Pg.Layout.(empty |> values "groups" Kind.Text))
+  in
+  let targets tenant key =
+    any "groups" (eq itself (value (Scoped.Group (tenant, key))))
+  in
+  List.iter
+    (fun (specification, expected) ->
+      Alcotest.check int64s
+        ("the evaluator: " ^ Ast.show Scoped.pp specification)
+        expected
+        (satisfied Scoped_evaluate.is_satisfied_by specification rows);
+      let query = compiled ~schema (transformed groups specification) in
+      let sql =
+        Printf.sprintf "SELECT id FROM spec_policies WHERE %s ORDER BY id" query.sql
+      in
+      Alcotest.check int64s sql expected (ids conn sql query.params))
+    [
+      (targets 1L "k1", [ 1L ]);
+      (targets 2L "k1", [ 2L ]);
+      (* A group of a tenant that has none of these policies. *)
+      (targets 3L "k1", []);
+      (not_ (targets 1L "k2"), [ 2L; 3L; 4L ]);
+    ]
+
+(* A collection of a document that is not an array has no items (ADR-0033): a JSON null,
+   an object, a scalar and a member that is not there are alike no rows, whatever the
+   schema declares and whatever the plan evaluates first - [any] is false of them and
+   [all] true, as of an empty array. Without the guard the [EXISTS] alone failed on the
+   null, "cannot extract elements from a scalar", and beside containment it did not, the
+   planner evaluating [@>] first: the same specification over the same rows failed under
+   one schema and selected under the other. The evaluator refuses such a candidate, as it
+   refuses a member that is not there, and the rows it refuses are listed as such. *)
+let a_collection_of_a_document_that_is_not_an_array_has_no_items conn =
+  exec_all conn
+    [
+      "CREATE TEMP TABLE spec_arrays (id int8 PRIMARY KEY, document jsonb NOT NULL)";
+      {|INSERT INTO spec_arrays VALUES (1, '{"items": [{"s": "a"}]}'), (2, '{"items": [{"s": "b"}, {"s": null}]}'), (3, '{"items": null}'), (4, '{}'), (5, '{"items": []}'), (6, '{"items": {"s": "a"}}'), (7, '{"items": "a"}')|};
+      "CREATE INDEX spec_arrays_document ON spec_arrays USING gin (document)";
+      "ANALYZE spec_arrays";
+    ];
+  let plain =
+    Pg.Schema.(
+      make "spec_arrays"
+      |> document "spec_arrays" "document"
+           Pg.Layout.(empty |> collection "items" (empty |> value "s" Kind.Text)))
+  in
+  let indexed = Pg.Schema.gin "spec_arrays" "document" plain in
+  let is_a () = eq (item "s") (text "a") in
+  let cases =
+    [
+      (any "document.items" (is_a ()), [ 1L ]);
+      (all "document.items" (is_a ()), [ 1L; 3L; 4L; 5L; 6L; 7L ]);
+      (not_ (any "document.items" (is_a ())), [ 2L; 3L; 4L; 5L; 6L; 7L ]);
+    ]
+  in
+  (* The same documents as candidates in memory, each under [document] as the column is:
+     the arrays are evaluated, the rest refused - no collection, or no member. *)
+  let item_of s = Record.(object_ [ ("s", value (opt_text s)) ]) in
+  let candidate members =
+    Record.(to_context (object_ [ ("document", object_ members) ]))
+  in
+  let documents =
+    [
+      (1L, candidate [ ("items", Record.collection [ item_of (Some "a") ]) ]);
+      (2L, candidate [ ("items", Record.collection [ item_of (Some "b"); item_of None ]) ]);
+      (3L, candidate [ ("items", Record.value Value.Null) ]);
+      (4L, candidate []);
+      (5L, candidate [ ("items", Record.collection []) ]);
+      (6L, candidate [ ("items", item_of (Some "a")) ]);
+      (7L, candidate [ ("items", Record.value (Value.Text "a")) ]);
+    ]
+  in
+  let refused = [ 3L; 4L; 6L; 7L ] in
+  List.iter
+    (fun (specification, expected) ->
+      List.iter
+        (fun (id, document) ->
+          match E.is_satisfied_by specification document with
+          | Ok satisfied ->
+              Alcotest.(check bool)
+                (Printf.sprintf "document %Ld" id)
+                (List.mem id expected) satisfied
+          | Error (Evaluate.Context (Context.Not_a_collection _ | Context.Missing _)) ->
+              Alcotest.(check bool)
+                (Printf.sprintf "document %Ld refused" id)
+                true (List.mem id refused)
+          | Error error ->
+              Alcotest.failf "document %Ld: %s" id (Evaluate.error_to_string error))
+        documents)
+    cases;
+  List.iter
+    (fun (storage, schema) ->
+      List.iter
+        (fun seqscan ->
+          exec conn ("SET enable_seqscan = " ^ seqscan);
+          List.iter
+            (fun (specification, expected) ->
+              let query = compiled ~schema specification in
+              let sql =
+                Printf.sprintf "SELECT id FROM spec_arrays WHERE %s ORDER BY id" query.sql
+              in
+              Alcotest.check int64s
+                (Printf.sprintf "%s, enable_seqscan = %s: %s" storage seqscan sql)
+                expected (ids conn sql query.params))
+            cases)
+        [ "on"; "off" ])
+    [ ("without the index", plain); ("with the index", indexed) ]
+
 let cases env uri =
   let case name f = Alcotest.test_case name `Quick (with_connection env uri f) in
   [
@@ -1192,6 +1799,18 @@ let cases env uri =
       the_item_of_an_enclosing_collection_is_named_from_an_inner_predicate;
     case "a string constant is read as the kind of the column beside it"
       a_string_constant_is_read_as_the_kind_of_the_column_beside_it;
+    case "a member of a document is compared as its declared kind"
+      a_member_of_a_document_is_compared_as_its_declared_kind;
+    case "an index on the expression of a member serves its comparisons"
+      an_index_on_the_expression_of_a_member_serves_its_comparisons;
+    case "a GIN index serves the equalities where only truth counts"
+      a_gin_index_serves_the_equalities_where_only_truth_counts;
+    case "a GIN index on a path serves the containment of the value there"
+      a_gin_index_on_a_path_serves_the_containment_of_the_value_there;
+    case "an element kept in part in the candidate's row is compared part by part"
+      an_element_kept_in_part_in_the_candidates_row_is_compared_part_by_part;
+    case "a collection of a document that is not an array has no items"
+      a_collection_of_a_document_that_is_not_an_array_has_no_items;
   ]
 
 let () =

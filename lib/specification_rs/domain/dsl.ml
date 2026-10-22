@@ -16,6 +16,8 @@ module Null_test = Null_test.Make (Value)
 
 let field_at path = Ast.field_at path
 let field names = Ast.field names
+let itself = Ast.itself
+let outer_itself up = Ast.outer_itself up
 let of_expr expr = expr
 let expr term = term
 let is_null term = Ast.is_null term
@@ -38,6 +40,10 @@ let modulo left right = Ast.modulo left right
 let shl left right = Ast.left_shift left right
 let shr left right = Ast.right_shift left right
 let neg term = Ast.neg term
+let any_at source predicate = Ast.any_at source predicate
+let any source predicate = Ast.any source predicate
+let all_at source predicate = Ast.all_at source predicate
+let all source predicate = Ast.all source predicate
 
 module Infix = struct
   let ( && ) = and_
@@ -64,6 +70,8 @@ end) =
 struct
   let field = field
   let field_at = field_at
+  let itself = itself
+  let outer_itself = outer_itself
   let value literal = Ast.value (L.to_value literal)
   let nullable literal = Ast.value (Value.of_option L.to_value literal)
 end
@@ -83,6 +91,8 @@ module Null_boolean = struct
 
   let field = field
   let field_at = field_at
+  let itself = itself
+  let outer_itself = outer_itself
   let value = Boolean.nullable
 end
 
@@ -91,6 +101,8 @@ module Number = struct
 
   let field = field
   let field_at = field_at
+  let itself = itself
+  let outer_itself = outer_itself
   let of_int value = Ast.value (Value.of_int value)
   let of_int64 value = Ast.value (Value.Int value)
   let of_float value = Ast.value (Value.Float value)
@@ -101,6 +113,8 @@ module Null_number = struct
 
   let field = field
   let field_at = field_at
+  let itself = itself
+  let outer_itself = outer_itself
   let of_int value = Ast.value (Value.of_option Value.of_int value)
   let of_int64 value = Ast.value (Value.of_option (fun v -> Value.Int v) value)
   let of_float value = Ast.value (Value.of_option (fun v -> Value.Float v) value)
@@ -121,6 +135,8 @@ module Null_text = struct
 
   let field = field
   let field_at = field_at
+  let itself = itself
+  let outer_itself = outer_itself
   let value = Text.nullable
 end
 
@@ -143,6 +159,8 @@ module Null_datetime = struct
 
   let field = field
   let field_at = field_at
+  let itself = itself
+  let outer_itself = outer_itself
   let value = Datetime.nullable
 end
 
@@ -164,6 +182,8 @@ module Null_timespan = struct
 
   let field = field
   let field_at = field_at
+  let itself = itself
+  let outer_itself = outer_itself
   let value = Timespan.nullable
 end
 
@@ -182,6 +202,8 @@ module Null_date = struct
 
   let field = field
   let field_at = field_at
+  let itself = itself
+  let outer_itself = outer_itself
   let value = Date.nullable
 end
 
@@ -200,5 +222,7 @@ module Null_uuid = struct
 
   let field = field
   let field_at = field_at
+  let itself = itself
+  let outer_itself = outer_itself
   let value = Uuid.nullable
 end

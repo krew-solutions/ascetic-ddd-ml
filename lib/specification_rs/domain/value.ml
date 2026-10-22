@@ -48,13 +48,19 @@ type t =
 [@@deriving show { with_path = false }, eq]
 
 let null = Null
-let is_null = function Null -> true | _ -> false
+let is_null = function
+  | Null -> true
+  | _ -> false
 let of_bool value = Bool value
-let to_bool = function Bool value -> Some value | _ -> None
+let to_bool = function
+  | Bool value -> Some value
+  | _ -> None
 let of_int value = Int (Int64.of_int value)
 let of_float value = Float value
 let of_string value = Text value
-let of_option f = function None -> Null | Some value -> f value
+let of_option f = function
+  | None -> Null
+  | Some value -> f value
 
 let kind = function
   | Null -> "null"

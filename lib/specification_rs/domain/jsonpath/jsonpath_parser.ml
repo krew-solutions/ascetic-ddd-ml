@@ -88,8 +88,16 @@ let one_style tokens =
         | _ -> false)
       (Array.to_list tokens)
   in
-  let named = find (function Slot.Param_key.Name _ -> true | _ -> false) in
-  let positional = find (function Slot.Param_key.Position _ -> true | _ -> false) in
+  let named =
+    find (function
+      | Slot.Param_key.Name _ -> true
+      | _ -> false)
+  in
+  let positional =
+    find (function
+      | Slot.Param_key.Position _ -> true
+      | _ -> false)
+  in
   match (named, positional) with
   | Some first, Some second ->
       Error
@@ -202,22 +210,25 @@ and operand input scope depth =
       Error
         (unexpected input "value (number, string, boolean, null or placeholder) or query")
 
-(* [query = ( "@" | "$" ) path ( "[*]" filter )?], after its first token: the value of a
-   member, or a collection with a predicate on its items. *)
+(* [query = "@" | ( "@" | "$" ) path ( "[*]" filter )?], after its first token: the item
+   itself, the value of a member, or a collection with a predicate on its items. *)
 and query input root depth =
   let* names, input = names input [] in
-  let* path =
-    Option.to_result
-      ~none:(error input "Expected field name" "after '@' or '$'")
-      (collection root names)
-  in
-  if kind input = Some Left_bracket then
-    let* depth = deeper input depth in
-    let* after = wildcard input in
-    let* predicate, rest = filter after (Path.Item 0) depth in
-    let* tree = over input (fun predicate -> Ast.any_at path predicate) predicate in
-    Ok (tree, rest)
-  else Ok (leaf (Ast.Field path), input)
+  match (collection root names, root) with
+  | Some path, _ ->
+      if kind input = Some Left_bracket then
+        let* depth = deeper input depth in
+        let* after = wildcard input in
+        let* predicate, rest = filter after (Path.Item 0) depth in
+        let* tree = over input (fun predicate -> Ast.any_at path predicate) predicate in
+        Ok (tree, rest)
+      else Ok (leaf (Ast.Field path), input)
+  (* [@] alone in the predicate of a collection: the item itself, an element of a
+     collection of values. Of the candidate, [$] or [@] of [$[?...]], there is no value,
+     and of an item no collection. *)
+  | None, Path.Item up when kind input <> Some Left_bracket ->
+      Ok (leaf (Ast.Item up), input)
+  | None, _ -> Error (error input "Expected field name" "after '@' or '$'")
 
 (* [template = "$" ( filter | path "[*]" filter )], and nothing after it. *)
 let template tokens end_ =

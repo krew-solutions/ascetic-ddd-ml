@@ -13,8 +13,10 @@
     an option, where the name stands for it, and [~none:true], [None -> true] the same
     with [||]: this is how what an option holds is ordered - [<] with [Some x], [None] or
     an option parameter is refused; [List.exists (fun item -> ...)] and [List.for_all],
-    nested as deep as the collections are. Anything else is a compile error at the place
-    it stands, and the function stays as it was. *)
+    nested as deep as the collections are, the item a member's owner or, of a collection
+    of values, the value itself, [fun tag -> tag = x]; [List.mem x collection], which is
+    [List.exists] of that. Anything else is a compile error at the place it stands, and
+    the function stays as it was. *)
 
 open Ppxlib
 

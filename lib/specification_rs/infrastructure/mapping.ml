@@ -4,7 +4,11 @@ type 's mapped = Scalar of 's Ast.t | Composite of 's mapped list | Null of 's
 type ('d, 's, 'e) t = {
   field : Path.t -> ('s mapped, 'e) result;
   value : 'd -> ('s mapped, 'e) result;
+  element : Path.t -> ('s mapped, 'e) result;
 }
+
+let make ?(element = fun _ -> Ok (Scalar Ast.itself)) ~field ~value () =
+  { field; value; element }
 
 type 'e error =
   | Mapping of 'e
@@ -61,7 +65,9 @@ let whole path (inside : inside) =
         | None -> Error No_current_item)
   in
   let prefix =
-    match collection with None -> [] | Some collection -> collection.domain
+    match collection with
+    | None -> []
+    | Some collection -> collection.domain
   in
   Option.to_result ~none:No_current_item (from_candidate (prefix @ Path.names path))
 
@@ -80,7 +86,7 @@ let rec placed_expr expr prefix up =
       | Some (first :: rest) ->
           Ok (Ast.Field (List.fold_left Path.child (Path.outer up first) rest))
       | Some [] | None -> Error Outside_its_collection)
-  | Field _ | Value _ -> Ok expr
+  | Field _ | Value _ | Item _ -> Ok expr
   | Prefix (op, operand) ->
       let* operand = placed_expr operand prefix up in
       Ok (Ast.Prefix (op, operand))
@@ -117,6 +123,33 @@ let rec placed mapped root (inside : inside) =
           Ok (Composite parts)
       | Null _ as null -> Ok null)
 
+(* [expr] with every item named in it [up] further out, but the items of the [local]
+   collections it is inside of itself. *)
+let rec shifted expr up local =
+  let item n = if n < local then n else n + up in
+  let path p =
+    match (Path.root p, Path.names p) with
+    | Path.Global, _ | _, [] -> p
+    | Item n, first :: rest -> List.fold_left Path.child (Path.outer (item n) first) rest
+  in
+  match expr with
+  | Ast.Value _ -> expr
+  | Field at -> Field (path at)
+  | Item n -> Item (item n)
+  | Prefix (op, operand) -> Prefix (op, shifted operand up local)
+  | Postfix (operand, op) -> Postfix (shifted operand up local, op)
+  | Infix (left, op, right) -> Infix (shifted left up local, op, shifted right up local)
+  | Any (source, predicate) -> Any (path source, shifted predicate up (local + 1))
+
+(* [mapped], said from one place, said from [up] collections further in: every item
+   named in it is [up] further out, unless it is an item of a collection inside it. A
+   path from the candidate is where it was. *)
+let rec further_out mapped up =
+  match mapped with
+  | Scalar expr -> Scalar (shifted expr up 0)
+  | Composite parts -> Composite (List.map (fun part -> further_out part up) parts)
+  | Null _ as null -> null
+
 let scalar = function
   | Scalar expr -> Ok expr
   | Null null -> Ok (Ast.Value null)
@@ -151,6 +184,7 @@ let rec lower mapping expr (inside : inside) =
   match expr with
   | Ast.Value value -> Result.map_error (fun error -> Mapping error) (mapping.value value)
   | Field path -> member mapping path inside
+  | Item up -> element mapping up inside
   | Prefix (op, operand) ->
       let* operand = lower mapping operand inside in
       let* operand = scalar operand in
@@ -193,6 +227,15 @@ and member mapping path inside =
   let* whole = whole path inside in
   let* mapped = Result.map_error (fun error -> Mapping error) (mapping.field whole) in
   placed mapped (Path.root path) inside
+
+(* The element [up] collections out, as the mapping has it and where the element was:
+   what the mapping says from the collection's predicate, [up] collections further
+   out. *)
+and element mapping up (inside : inside) =
+  let* collection = Option.to_result ~none:No_current_item (List.nth_opt inside up) in
+  let* path = Option.to_result ~none:No_current_item (from_candidate collection.domain) in
+  let* mapped = Result.map_error (fun error -> Mapping error) (mapping.element path) in
+  Ok (further_out mapped up)
 
 (* [any] over the collection at [source]: a collection is a member, the mapping says
    where it is, by a path from the candidate, and the predicate is transformed inside

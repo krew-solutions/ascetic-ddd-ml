@@ -11,6 +11,11 @@
     - a candidate satisfies a specification whose value is true; a null does not, as a row
       with a null [WHERE] is not selected.
 
+    The item of a collection is what the candidate's {!Context.t} gives: an object, whose
+    members a path names, or a value, which the tree names as a whole, {!Ast.itself}. The
+    item itself of an object is [Not_a_value], a member of a value [Not_an_object], either
+    named by the collection's items, [tags[*]].
+
     [AND] and [OR] do not evaluate their right side once the left has decided the result,
     and [any] stops at its first witness, as the same operators do in OCaml, Python and
     Go. The sources evaluate everything; the difference shows only where the part not

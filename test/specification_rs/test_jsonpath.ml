@@ -389,6 +389,9 @@ let what_the_grammar_does_not_have_is_refused () =
       ("$.items", "Expected wildcard '[*]'", 7);
       ("$[?@. > 1]", "Expected field name", 6);
       ("$[?@ > 1]", "Expected field name", 5);
+      (* The item itself is a value, not a collection; [$] is no value. *)
+      ("$.tags[*][?@[*][?@ == 1]]", "Expected field name", 12);
+      ("$.tags[*][?$ == 1]", "Expected field name", 13);
       ("$[?@.age > ]", "Unexpected token ']'", 11);
       ("$[?@.age > foo]", "Unexpected token 'foo'", 11);
       ("$[?@.age > %x]", "Malformed placeholder", 11);
@@ -425,7 +428,7 @@ let what_the_grammar_does_not_have_is_refused () =
 
 (* The levels of the longest way down a tree: what a reader of it recurses through. *)
 let rec height = function
-  | Value _ | Field _ -> 1
+  | Value _ | Field _ | Item _ -> 1
   | Prefix (_, operand) | Postfix (operand, _) | Any (_, operand) -> 1 + height operand
   | Infix (left, _, right) -> 1 + max (height left) (height right)
 
@@ -536,10 +539,10 @@ let no_tree_of_a_template_is_taller_than_the_bound () =
    transformed, compared, shown. *)
 let the_deepest_template_is_read_by_everything () =
   let same : (Value.t, Value.t, string) Mapping.t =
-    {
-      field = (fun path -> Ok (Scalar (Field path)));
-      value = (fun value -> Ok (Scalar (Value value)));
-    }
+    Mapping.make
+      ~field:(fun path -> Ok (Scalar (Field path)))
+      ~value:(fun value -> Ok (Scalar (Value value)))
+      ()
   in
   let deep open_ close times =
     Printf.sprintf "$[?%s@.a == %%d%s]" (repeat open_ times) (repeat close times)
@@ -656,6 +659,27 @@ let a_string_is_read_as_the_kind_of_the_member_beside_it () =
     (Result.is_error
        (Template.matches (template "$[?@.day < 'yesterday']") row Params.none))
 
+(* [@] alone in the predicate of a collection is the item itself, as RFC 9535 has it: an
+   element of a collection of values. Bound to a null, its equality is the null test, as a
+   member's is. *)
+let a_bare_at_is_the_element_of_a_collection_of_values () =
+  let tagged = template "$.tags[*][?@ == %s]" in
+  Alcotest.check bound "sale"
+    (Ok (any "tags" (eq itself (Ast.value (vtext "sale")))))
+    (Template.bind tagged (Params.positional [ vtext "sale" ]));
+  Alcotest.check bound "null"
+    (Ok (any "tags" (is_null itself)))
+    (Template.bind tagged (Params.positional [ Value.Null ]));
+  let policy =
+    Record.(
+      to_context
+        (object_ [ ("tags", collection [ value (vtext "sale"); value (vtext "new") ]) ]))
+  in
+  Alcotest.check matched "new" (Ok true)
+    (Template.matches tagged policy (Params.positional [ vtext "new" ]));
+  Alcotest.check matched "old" (Ok false)
+    (Template.matches tagged policy (Params.positional [ vtext "old" ]))
+
 let () =
   let case name f = Alcotest.test_case name `Quick f in
   Alcotest.run "jsonpath"
@@ -681,6 +705,8 @@ let () =
           case "collections nest" collections_nest;
           case "a member that is not there is an error"
             a_member_that_is_not_there_is_an_error;
+          case "a bare @ is the element of a collection of values"
+            a_bare_at_is_the_element_of_a_collection_of_values;
         ] );
       ( "errors",
         [

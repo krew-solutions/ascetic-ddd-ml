@@ -19,6 +19,14 @@ val error_to_string : error -> string
 type 'v t = {
   field : string -> ('v, error) result;  (** The value of the member [name]. *)
   object_ : string -> ('v t, error) result;  (** The object that is the member [name]. *)
-  collection : string -> ('v t list, error) result;
-      (** The items of the collection that is the member [name]. *)
+  collection : string -> ('v element list, error) result;
+      (** The items of the collection that is the member [name]: objects, or values - the
+          identifiers of the groups a policy targets. *)
 }
+
+(** An item of a collection: an object, which has members, or a value, which is one - as
+    [field] gives it, by value: a domain's element is often a type of its own that no
+    context can be made of. *)
+and 'v element =
+  | Object of 'v t  (** An object, whose members a path names: [Path.item "price"]. *)
+  | Value of 'v  (** A value, which the tree names as a whole: {!Ast.Item}. *)

@@ -14,5 +14,7 @@ let error_to_string = function
 type 'v t = {
   field : string -> ('v, error) result;
   object_ : string -> ('v t, error) result;
-  collection : string -> ('v t list, error) result;
+  collection : string -> ('v element list, error) result;
 }
+
+and 'v element = Object of 'v t | Value of 'v

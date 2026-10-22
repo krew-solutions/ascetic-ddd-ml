@@ -5,7 +5,9 @@ module type NULLABLE = sig
 end
 
 module Make (N : NULLABLE) = struct
-  let is_null = function Ast.Value value -> N.is_null value | _ -> false
+  let is_null = function
+    | Ast.Value value -> N.is_null value
+    | _ -> false
 
   (* [test] of the operand that stands beside the null constant, or [compare] of the two
      if neither is one. *)
@@ -26,5 +28,5 @@ module Make (N : NULLABLE) = struct
     | Prefix (op, operand) -> Prefix (op, throughout operand)
     | Postfix (operand, op) -> Postfix (throughout operand, op)
     | Any (source, predicate) -> Any (source, throughout predicate)
-    | (Value _ | Field _) as leaf -> leaf
+    | (Value _ | Field _ | Item _) as leaf -> leaf
 end

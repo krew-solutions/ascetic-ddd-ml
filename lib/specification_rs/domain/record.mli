@@ -5,7 +5,11 @@
 
     An object that may be absent, an option of a Value Object, is a null value where it is
     absent, [value Value.Null]: null to a null test, and no object to go into. A member
-    left out is missing, which is another thing. *)
+    left out is missing, which is another thing.
+
+    A collection of values - the groups a policy targets - is a collection of [value]s: its
+    items are values, {!Context.Value}, and the tree names each as the item itself,
+    {!Ast.itself}. *)
 
 (** A value, an object of named members, or a collection of items. *)
 type 'v t =

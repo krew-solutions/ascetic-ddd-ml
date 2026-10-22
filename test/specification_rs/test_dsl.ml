@@ -140,6 +140,48 @@ let what_is_built_is_a_specification () =
         "compiled" {|"price" - "discount" < $1 AND "deleted_at" IS NULL|} query.sql
   | Error error -> Alcotest.fail (Pg.error_to_string error)
 
+(* A collection is quantified with a predicate that is a boolean term: a member of the
+   item a field of [Path.item], an element of a collection of values the item itself, of
+   the sort it is declared; an element that may be null is declared nullable, and has the
+   null test. A number for the predicate, [any "items" (Number.field_at (Path.item
+   "price"))], does not type-check. *)
+let a_collection_is_quantified_by_a_boolean_term () =
+  let dear = any "items" (gt (Number.field_at (Path.item "price")) (Number.of_int 500)) in
+  check "dear" (Ast.any "items" (Ast.gt (Ast.item "price") (int 500))) dear;
+  let on_sale = any "tags" (eq Text.itself (Text.value "sale")) in
+  check "on sale"
+    (Ast.any "tags" (Ast.eq Ast.itself (Ast.value (Value.Text "sale"))))
+    on_sale;
+  let none_missing = all "tags" (is_not_null Null_text.itself) in
+  check "none missing" (Ast.all "tags" (Ast.is_not_null Ast.itself)) none_missing;
+  (* The element of an enclosing collection, from the predicate of another. *)
+  check "tagged with a size"
+    (Ast.any "sizes" (Ast.any "tags" (Ast.eq Ast.itself (Ast.outer_itself 1))))
+    (any "sizes" (any "tags" (eq Text.itself (Text.outer_itself 1))));
+  let specification =
+    expr Infix.(Boolean.field "active" && dear && on_sale && none_missing)
+  in
+  let store =
+    Record.(
+      to_context
+        (object_
+           [
+             ("active", value (Value.Bool true));
+             ("items", collection [ object_ [ ("price", value (Value.of_int 999)) ] ]);
+             ("tags", collection [ value (Value.Text "new"); value (Value.Text "sale") ]);
+           ]))
+  in
+  Alcotest.(check (result bool (testable Evaluate.pp_error Evaluate.equal_error)))
+    "satisfied" (Ok true)
+    (E.is_satisfied_by specification store);
+  match Pg.compile specification with
+  | Ok query ->
+      Alcotest.(check string)
+        "compiled"
+        {|"active" AND EXISTS (SELECT 1 FROM unnest("items") AS "item_1" WHERE "item_1"."price" > $1) AND EXISTS (SELECT 1 FROM unnest("tags") AS "tag_2" WHERE "tag_2" = $2) AND NOT EXISTS (SELECT 1 FROM unnest("tags") AS "tag_3" WHERE NOT "tag_3" IS NOT NULL)|}
+        query.sql
+  | Error error -> Alcotest.fail (Pg.error_to_string error)
+
 let () =
   let case name f = Alcotest.test_case name `Quick f in
   Alcotest.run "dsl"
@@ -155,5 +197,7 @@ let () =
           case "a tree built otherwise comes in as the sort it is declared"
             a_tree_built_otherwise_comes_in_as_the_sort_it_is_declared;
           case "what is built is a specification" what_is_built_is_a_specification;
+          case "a collection is quantified by a boolean term"
+            a_collection_is_quantified_by_a_boolean_term;
         ] );
     ]

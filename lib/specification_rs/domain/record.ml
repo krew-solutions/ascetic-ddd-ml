@@ -31,6 +31,12 @@ let rec to_context record =
       (fun name ->
         let* member = member record name in
         match member with
-        | Collection items -> Ok (List.map to_context items)
+        | Collection items ->
+            Ok
+              (List.map
+                 (function
+                   | Value v -> Context.Value v
+                   | (Object _ | Collection _) as item -> Context.Object (to_context item))
+                 items)
         | Value _ | Object _ -> Error (Context.Not_a_collection name));
   }

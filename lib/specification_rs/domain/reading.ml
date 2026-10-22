@@ -51,13 +51,19 @@ let offset text =
         let seconds = ((hours * 60) + minutes) * 60 in
         if seconds >= 86_400 then None
         else
-          match text.[0] with '+' -> Some seconds | '-' -> Some (-seconds) | _ -> None)
+          match text.[0] with
+          | '+' -> Some seconds
+          | '-' -> Some (-seconds)
+          | _ -> None)
 
 (* Where the offset begins in a time of day: at the last of [Z], [+] and [-]. *)
 let offset_at text =
   let rec go i =
     if i < 0 then None
-    else match text.[i] with 'Z' | '+' | '-' -> Some i | _ -> go (i - 1)
+    else
+      match text.[i] with
+      | 'Z' | '+' | '-' -> Some i
+      | _ -> go (i - 1)
   in
   go (String.length text - 1)
 
@@ -111,12 +117,16 @@ let calendar_date text =
   let* midnight = Ptime.of_date date in
   Some (fst (Ptime.Span.to_d_ps (Ptime.to_span midnight)))
 
-let is_hex = function '0' .. '9' | 'a' .. 'f' | 'A' .. 'F' -> true | _ -> false
+let is_hex = function
+  | '0' .. '9' | 'a' .. 'f' | 'A' .. 'F' -> true
+  | _ -> false
 
 let canonical text =
   let rec go i =
     i = 36
-    || (match i with 8 | 13 | 18 | 23 -> text.[i] = '-' | _ -> is_hex text.[i])
+    || (match i with
+         | 8 | 13 | 18 | 23 -> text.[i] = '-'
+         | _ -> is_hex text.[i])
        && go (i + 1)
   in
   String.length text = 36 && go 0

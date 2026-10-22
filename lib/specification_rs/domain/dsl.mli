@@ -28,6 +28,18 @@
           || Text.field "tag" = Text.value "sale")
     ]}
 
+    A collection is quantified by {!any} and {!all}, whose predicate is a boolean term: a
+    member of the item is a field of [Path.item], and an element of a collection of
+    values the item itself, {!itself}, declared of its sort as a field is. A predicate
+    that is no truth value - a number for the predicate of [any] - does not type-check.
+
+    {[
+    let dear = any "items" (gt (Number.field_at (Path.item "price")) (Number.of_int 500))
+    let on_sale = any "tags" (eq Text.itself (Text.value "sale"))
+    let priced = all "items" (gt (Number.field_at (Path.item "price")) (Number.of_int 0))
+    let specification = expr Infix.(dear && on_sale && priced)
+    ]}
+
     Python overloads the comparison operators; Go, which cannot, names them. Here every
     operator is a named function, and {!Infix} redefines OCaml's own operators over terms
     for a scope that opens it: OCaml gives an operator its precedence by its first
@@ -69,12 +81,36 @@ val field_at : Path.t -> ('s, 'n) t
 val field : string -> ('s, 'n) t
 (** {!field_at} of the dotted path from the candidate. *)
 
+val itself : ('s, 'n) t
+(** The item under test itself, declared to be of whatever sort and nullability its use
+    asks for: an element of a collection of values, in the predicate of {!any} or {!all} -
+    [Text.itself] of the tags of a store, [Null_text.itself] where a tag may be null. *)
+
+val outer_itself : int -> ('s, 'n) t
+(** The item [up] collections out itself: [outer_itself 0] is {!itself}. *)
+
 val of_expr : Value.t Ast.t -> ('s, 'n) t
 (** [expr], declared to be of this sort. Nothing checks the declaration: this is the way
     in for a tree built by other means - an {!Ast.any}, say, which is a boolean. *)
 
 val expr : ('s, 'n) t -> Value.t Ast.t
 (** The tree built so far: the sources' [delegate]. *)
+
+(** {1 Collections} *)
+
+val any_at : Path.t -> (boolean, 'n) t -> (boolean, not_null) t
+(** Some item of the collection at [source] satisfies [predicate]: a truth value, never
+    null, as {!Ast.any_at} is. *)
+
+val any : string -> (boolean, 'n) t -> (boolean, not_null) t
+(** {!any_at} of the dotted path from the candidate. *)
+
+val all_at : Path.t -> (boolean, 'n) t -> (boolean, not_null) t
+(** No item of the collection at [source] fails [predicate]: a truth value, never null,
+    as {!Ast.all_at} is. *)
+
+val all : string -> (boolean, 'n) t -> (boolean, not_null) t
+(** {!all_at} of the dotted path from the candidate. *)
 
 (** {1 Nullability} *)
 
@@ -150,6 +186,8 @@ module Boolean : sig
 
   val field : string -> t
   val field_at : Path.t -> t
+  val itself : t
+  val outer_itself : int -> t
   val value : bool -> t
 end
 
@@ -158,6 +196,8 @@ module Null_boolean : sig
 
   val field : string -> t
   val field_at : Path.t -> t
+  val itself : t
+  val outer_itself : int -> t
   val value : bool option -> t
 end
 
@@ -166,6 +206,8 @@ module Number : sig
 
   val field : string -> t
   val field_at : Path.t -> t
+  val itself : t
+  val outer_itself : int -> t
   val of_int : int -> t
   val of_int64 : int64 -> t
   val of_float : float -> t
@@ -176,6 +218,8 @@ module Null_number : sig
 
   val field : string -> t
   val field_at : Path.t -> t
+  val itself : t
+  val outer_itself : int -> t
   val of_int : int option -> t
   val of_int64 : int64 option -> t
   val of_float : float option -> t
@@ -186,6 +230,8 @@ module Text : sig
 
   val field : string -> t
   val field_at : Path.t -> t
+  val itself : t
+  val outer_itself : int -> t
   val value : string -> t
 end
 
@@ -194,6 +240,8 @@ module Null_text : sig
 
   val field : string -> t
   val field_at : Path.t -> t
+  val itself : t
+  val outer_itself : int -> t
   val value : string option -> t
 end
 
@@ -203,6 +251,8 @@ module Datetime : sig
 
   val field : string -> t
   val field_at : Path.t -> t
+  val itself : t
+  val outer_itself : int -> t
   val value : Value.Timestamp.t -> t
 
   val add : (datetime, 'n) term -> (timespan, 'n2) term -> t
@@ -220,6 +270,8 @@ module Null_datetime : sig
 
   val field : string -> t
   val field_at : Path.t -> t
+  val itself : t
+  val outer_itself : int -> t
   val value : Value.Timestamp.t option -> t
 end
 
@@ -229,6 +281,8 @@ module Timespan : sig
 
   val field : string -> t
   val field_at : Path.t -> t
+  val itself : t
+  val outer_itself : int -> t
   val value : Value.Interval.t -> t
   val add : (timespan, 'n) term -> (timespan, 'n2) term -> t
   val sub : (timespan, 'n) term -> (timespan, 'n2) term -> t
@@ -239,6 +293,8 @@ module Null_timespan : sig
 
   val field : string -> t
   val field_at : Path.t -> t
+  val itself : t
+  val outer_itself : int -> t
   val value : Value.Interval.t option -> t
 end
 
@@ -248,6 +304,8 @@ module Date : sig
 
   val field : string -> t
   val field_at : Path.t -> t
+  val itself : t
+  val outer_itself : int -> t
   val value : Value.Date.t -> t
 end
 
@@ -256,6 +314,8 @@ module Null_date : sig
 
   val field : string -> t
   val field_at : Path.t -> t
+  val itself : t
+  val outer_itself : int -> t
   val value : Value.Date.t option -> t
 end
 
@@ -265,6 +325,8 @@ module Uuid : sig
 
   val field : string -> t
   val field_at : Path.t -> t
+  val itself : t
+  val outer_itself : int -> t
   val value : Uuidm.t -> t
 end
 
@@ -273,5 +335,7 @@ module Null_uuid : sig
 
   val field : string -> t
   val field_at : Path.t -> t
+  val itself : t
+  val outer_itself : int -> t
   val value : Uuidm.t option -> t
 end

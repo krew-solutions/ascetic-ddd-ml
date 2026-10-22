@@ -39,6 +39,21 @@ type ('d, 's, 'e) t = {
   field : Path.t -> ('s mapped, 'e) result;
       (** What the member at [path] is: a path from the candidate. *)
   value : 'd -> ('s mapped, 'e) result;  (** What [value] is. *)
+  element : Path.t -> ('s mapped, 'e) result;
+      (** What an element of the collection at [collection] - a path from the candidate,
+          as [field] is asked - is in the storage, said from where the collection's
+          predicate stands, as the tree says it there: {!Ast.itself} is the element,
+          [Ast.outer_itself n] and a path from it the item [n] collections further out, a
+          path from the candidate is the candidate's. {!transform} puts the answer where
+          the element was.
+
+          The element itself, unless the storage keeps a part of it elsewhere. A
+          tenant-scoped identity in the domain is often its local key in the storage's
+          array and its tenant once, in the candidate's row: the element is then
+          [Composite [ Scalar (field "tenant_id"); Scalar itself ]], and its equality with
+          an identity, mapped to the same two parts, compares the tenant with the row's and
+          the key with the element - where an identity mapped to its key alone would find
+          the groups of another tenant that have the same key. *)
 }
 (** What the storage has for the domain's members and values: the sources'
     [ITransformContext].
@@ -59,7 +74,22 @@ type ('d, 's, 'e) t = {
     a query over the columns the repository chose to expose, through the relations it
     declared in the {!Pg.Schema}, and not whatever a caller composed to read another table
     or to scan a column without an index. {!transform} is the one place for that: the
-    compiler writes the names it is given. *)
+    compiler writes the names it is given.
+
+    An element of a collection of values, {!Ast.itself}, is what the collection holds,
+    where the mapping put the collection - unless the mapping says otherwise, by [element],
+    of an element the storage keeps in part elsewhere. A constant compared with it is the
+    mapping's [value]. *)
+
+val make :
+  ?element:(Path.t -> ('s mapped, 'e) result) ->
+  field:(Path.t -> ('s mapped, 'e) result) ->
+  value:('d -> ('s mapped, 'e) result) ->
+  unit ->
+  ('d, 's, 'e) t
+(** A mapping of [field] and [value]; [element] answers the element itself,
+    [Scalar Ast.itself], unless given: a mapping that says nothing of elements is what it
+    was before there were any. *)
 
 (** A specification could not be transformed. *)
 type 'e error =

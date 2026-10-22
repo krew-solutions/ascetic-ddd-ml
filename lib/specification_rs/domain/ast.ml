@@ -1,6 +1,7 @@
 type 'v t =
   | Value of 'v
   | Field of Path.t
+  | Item of int
   | Prefix of Operator.prefix * 'v t
   | Infix of 'v t * Operator.infix * 'v t
   | Postfix of 'v t * Operator.postfix
@@ -12,6 +13,7 @@ let ( let* ) = Result.bind
 let rec try_map_values f = function
   | Value v -> Result.map (fun w -> Value w) (f v)
   | Field path -> Ok (Field path)
+  | Item up -> Ok (Item up)
   | Prefix (op, operand) ->
       let* operand = try_map_values f operand in
       Ok (Prefix (op, operand))
@@ -31,6 +33,8 @@ let field_at path = Field path
 let field names = Field (Path.of_string names)
 let item name = Field (Path.item name)
 let outer up name = Field (Path.outer up name)
+let itself = Item 0
+let outer_itself up = Item up
 let not_ operand = Prefix (Operator.Not, operand)
 let neg operand = Prefix (Operator.Neg, operand)
 let infix left op right = Infix (left, op, right)

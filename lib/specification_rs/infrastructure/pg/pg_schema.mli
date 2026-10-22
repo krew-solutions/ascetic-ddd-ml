@@ -14,7 +14,13 @@
     the query's row as a column of a composite type is declared as one,
     [composite "stores" "address"], and a path through it from the candidate is a member
     of it, [("s"."address")."city"]: from the candidate an undeclared name is a table's
-    alias, ["s"."price"]. *)
+    alias, ["s"."price"]. A column of [jsonb] that holds a document is declared with what
+    the document holds, [document "policies" "document" layout], and a path through it
+    from the candidate or from an item is a member of the document,
+    [("s"."document" ->> 'kind')], read as the {!Pg_layout.t} says. A document with a GIN
+    index is declared to have one, [gin "policies" "document"], and an equality on a
+    member of it where only truth counts is written as containment, which the index
+    serves. *)
 
 (** A foreign key: [table (columns) REFERENCES referenced_table (referenced_columns)]. *)
 module Foreign_key : sig
@@ -65,7 +71,47 @@ val composite : string -> string -> t -> t
     composite, [("s"."address")."city"], where a name not declared is a table's alias,
     ["s"."price"]. *)
 
+val document : string -> string -> Pg_layout.t -> t -> t
+(** [document table column layout]: the column [column] of [table] is a [jsonb] document
+    that holds what [layout] says. A path through it is a member of the document,
+    [("s"."document" ->> 'kind')], read as the kind the layout gives it; a collection in
+    it is read with [jsonb_array_elements]. [table] is a table, the query's or the table
+    of a collection or of an object kept by a key. *)
+
+val gin : string -> string -> t -> t
+(** [gin table column]: the document at [column] of [table] has a GIN index, of
+    [jsonb_ops] or of [jsonb_path_ops]: [CREATE INDEX ... USING gin (document jsonb_path_ops)].
+    Where only truth counts - the condition as a whole, [AND] and [OR] there, the
+    predicate of [any] - an equality of a text, an integer or a boolean member with a
+    constant is written as containment, ["p"."document" @> ...], which the index serves;
+    and [any] over a collection of the document has the equalities of its predicate beside
+    it as containment. Without this a btree index on the member's expression serves the
+    equality, and containment would not be served.
+
+    Containment is true or false where the equality is null: the condition is what goes
+    after [WHERE], and a caller that negates it negates the specification, not the
+    text. *)
+
+val gin_at : string -> string -> string -> t -> t
+(** [gin_at table column path]: the value at [path] in the document at [column] of
+    [table] has a GIN index of its own, on the expression that reaches it:
+    [gin_at "groups" "document" "subgroups"] is
+    [CREATE INDEX ... USING gin ((document -> 'subgroups'))], and
+    ["targeting.device_groups"] is [(document -> 'targeting' -> 'device_groups')]. What
+    {!gin} writes as containment of the document is written of that value where the
+    member or the collection is under [path]: [("g"."document" -> 'subgroups') @> ...], the
+    expression the index is on; containment of the whole document is not served by it.
+    Where several declared paths lead to a member, the deepest is written. *)
+
 (** {1 What the compiler asks} *)
+
+val gins : t -> string -> string -> string list list
+(** [gins schema table column]: the paths in the document at [column] of [table] that
+    have a GIN index: the document itself is the empty one. *)
+
+val layout : t -> string -> string -> Pg_layout.t option
+(** [layout schema table column]: what the document at [column] of [table] holds, if it
+    is declared one. *)
 
 val is_composite : t -> string -> string -> bool
 (** Whether [column] of [table] is declared a composite. *)

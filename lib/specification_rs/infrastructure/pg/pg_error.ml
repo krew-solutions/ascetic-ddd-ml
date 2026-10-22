@@ -15,6 +15,14 @@ type t =
       (** A name that is not one: anything but ASCII letters, digits and [_], not starting
           with a digit. *)
   | Nul_in_text  (** A text with a NUL in it: no text PostgreSQL has, so no query. *)
+  | Undeclared_member of string
+      (** A path into a document that its layout does not declare as what the tree takes
+          it for: a member it does not have, an object on the way that is not one, a
+          value that is an object or a collection, a collection that is not one. The
+          message names the path. *)
+  | Not_a_value of string
+      (** The item itself where the item has members and is no value: a row of a table,
+          whose column is named, or an object of a document, whose member is. *)
 [@@deriving show { with_path = false }, eq]
 
 let to_string = function
@@ -22,6 +30,9 @@ let to_string = function
   | No_table ->
       "a member of the candidate inside a collection's predicate needs the candidate's \
        table: compile with a schema"
-  | Ambiguous_key message | Wrong_key message -> message
+  | Ambiguous_key message
+  | Wrong_key message
+  | Undeclared_member message
+  | Not_a_value message -> message
   | Nul_in_text -> "a text with a NUL (U+0000) in it is no text PostgreSQL has"
   | Invalid_identifier name -> Printf.sprintf "'%s' is not a valid identifier" name

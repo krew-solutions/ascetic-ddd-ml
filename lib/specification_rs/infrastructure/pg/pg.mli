@@ -32,6 +32,17 @@
     column's place. The sources write dots in every case, which PostgreSQL reads as a
     table and a column; and from an item they drop its alias.
 
+    A column the {!Schema} declares a [jsonb] document holds members of its own, which a
+    path goes on into: [("s"."document" ->> 'kind')] and, for an array of objects,
+    [EXISTS (SELECT 1 FROM jsonb_array_elements(...))] over what is at the path if it is an
+    array, and over nothing if it is not. Each value is read as the kind the document's
+    {!Layout} gives it, a cast or a collation, so that it is a value of a type as a column
+    is and a constant beside it takes that type: a document does not say its kinds.
+
+    Where the schema says a document has a GIN index, an equality on a member of it,
+    where only truth counts, is what the document contains: ["p"."document" @> ...],
+    which the index serves.
+
     The sources number parameters and aliases with counters that every visitor shares and
     changes. Here the count so far goes into each step and the count after comes out of
     it, so compiling changes nothing anywhere.
@@ -54,6 +65,8 @@
 
 module Schema = Pg_schema
 module Foreign_key = Pg_schema.Foreign_key
+module Layout = Pg_layout
+module Kind = Pg_layout.Kind
 
 (** A specification could not be compiled. *)
 type error = Pg_error.t =
@@ -63,6 +76,8 @@ type error = Pg_error.t =
   | Wrong_key of string
   | Invalid_identifier of string
   | Nul_in_text
+  | Undeclared_member of string
+  | Not_a_value of string
 [@@deriving show, eq]
 
 val error_to_string : error -> string
@@ -92,9 +107,10 @@ end
 module Make (P : PARAM_TYPE) : sig
   val compile : ?schema:Schema.t -> ?offset:int -> P.t Ast.t -> (P.t query, error) result
   (** [specification] as a condition: the sources' [compile_to_sql]. Its collections are
-      embedded unless [schema] says how they are stored; its parameters are numbered from
-      [$1], or from [$offset+1] for a condition that is a part of a larger query whose
-      first [offset] parameters are taken. *)
+      embedded unless [schema] says how they are stored, and its documents are read as
+      [schema] declares them; its parameters are numbered from [$1], or from [$offset+1]
+      for a condition that is a part of a larger query whose first [offset] parameters are
+      taken. *)
 end
 
 val compile :

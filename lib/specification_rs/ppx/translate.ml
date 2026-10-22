@@ -89,7 +89,10 @@ let base scope name =
 let further_in place =
   {
     place with
-    root = (match place.root with Candidate -> Candidate | Item up -> Item (up + 1));
+    root =
+      (match place.root with
+      | Candidate -> Candidate
+      | Item up -> Item (up + 1));
   }
 
 (* The scope of the predicate of a collection whose items are [item]. What is held so far
@@ -131,8 +134,32 @@ let path_of ~loc place =
            (fun acc name -> call ~loc (path ~loc "child") [ acc; B.estring ~loc name ])
            root rest)
 
-let field ~loc place =
-  Option.map (fun path -> call ~loc (ast ~loc "field_at") [ path ]) (path_of ~loc place)
+(* The code of the expression the place is: a member, or an item itself, an element of a
+   collection of values; none of the candidate itself. *)
+let expression_of ~loc place =
+  match (place.root, place.names) with
+  | Item up, [] -> Some (call ~loc (ast ~loc "outer_itself") [ B.eint ~loc up ])
+  | _ ->
+      Option.map
+        (fun path -> call ~loc (ast ~loc "field_at") [ path ])
+        (path_of ~loc place)
+
+(* The code of the [Path.t] of a collection, if [expr] is a member of the candidate or
+   of the item; none if it is a value from elsewhere. What a collection is: the candidate
+   itself is none, and an item itself is an object or a value, not a collection of
+   collections. *)
+let collection_of (expr : expression) place =
+  let loc = expr.pexp_loc in
+  match path_of ~loc place with
+  | Some path -> path
+  | None -> (
+      match place.root with
+      | Candidate ->
+          refuse loc "the candidate itself is not a collection: name one of its members"
+      | Item _ ->
+          refuse loc
+            "an item itself is not a collection: a collection of collections is not \
+             expressible")
 
 (* [a.b.c] as its first name and the names after it; none for anything else. *)
 let rec chain (expr : expression) =
@@ -175,7 +202,9 @@ let rec is_option scope (expr : expression) =
   | Pexp_constraint (inner, _) -> is_option scope inner
   | Pexp_construct ({ txt = Lident ("None" | "Some"); _ }, _) -> true
   | Pexp_ident { txt = Lident name; _ } -> (
-      match base scope name with Base_param { optional; _ } -> optional | _ -> false)
+      match base scope name with
+      | Base_param { optional; _ } -> optional
+      | _ -> false)
   | _ -> false
 
 (* An option is not ordered in a specification. OCaml has a none below every [Some], the
@@ -208,8 +237,7 @@ let closure (expr : expression) what =
   | Pexp_function
       ( [ { pparam_desc = Pparam_val (Nolabel, None, pattern); _ } ],
         _,
-        Pfunction_body body ) ->
-      (name_of pattern, body)
+        Pfunction_body body ) -> (name_of pattern, body)
   | _ -> refuse expr.pexp_loc "%s" what
 
 let rec expr scope (e : expression) : expression =
@@ -241,8 +269,8 @@ and member scope (e : expression) =
   let loc = e.pexp_loc in
   match place scope e with
   | Some place -> (
-      match field ~loc place with
-      | Some field -> field
+      match expression_of ~loc place with
+      | Some value -> value
       | None -> refuse loc "the candidate itself is not a value: name one of its members")
   | None -> (
       match chain e with
@@ -336,6 +364,10 @@ and apply scope (e : expression) (f : expression) args =
           quantifier scope "any_at" collection predicate
       | "for_all", [ (Nolabel, predicate); (Nolabel, collection) ] ->
           quantifier scope "all_at" collection predicate
+      | "mem", [ (Nolabel, element); (Nolabel, collection) ] ->
+          contains scope e element collection
+      | "memq", _ ->
+          refuse loc "physical equality has no meaning in a specification: `List.mem`"
       | _ -> refuse f.pexp_loc "`List.%s` has no meaning in a specification" fn)
   | _ -> inexpressible e
 
@@ -346,11 +378,18 @@ and fold scope (e : expression) args =
   let labelled label =
     List.find_map
       (fun (l, arg) ->
-        match l with Labelled l when String.equal l label -> Some arg | _ -> None)
+        match l with
+        | Labelled l when String.equal l label -> Some arg
+        | _ -> None)
       args
   in
   let positional =
-    List.filter_map (fun (l, arg) -> match l with Nolabel -> Some arg | _ -> None) args
+    List.filter_map
+      (fun (l, arg) ->
+        match l with
+        | Nolabel -> Some arg
+        | _ -> None)
+      args
   in
   match (labelled "none", labelled "some", positional) with
   | Some none, Some some, [ option ] ->
@@ -385,8 +424,7 @@ and matched scope (e : expression) scrutinee cases =
             Some ("and_", "is_not_null")
         | ( Ppat_construct ({ txt = Lident "None"; _ }, None),
             None,
-            Pexp_construct ({ txt = Lident "true"; _ }, None) ) ->
-            Some ("or_", "is_null")
+            Pexp_construct ({ txt = Lident "true"; _ }, None) ) -> Some ("or_", "is_null")
         | _ -> None)
       cases
   in
@@ -418,8 +456,8 @@ and held scope ~loc ~join ~test option name predicate =
   let held, option_expr =
     match place scope option with
     | Some place -> (
-        match field ~loc place with
-        | Some field -> (Member place, field)
+        match expression_of ~loc place with
+        | Some value -> (Member place, value)
         | None -> nameless ())
     | None -> (
         match chain option with
@@ -435,27 +473,35 @@ and held scope ~loc ~join ~test option name predicate =
   let predicate = expr (holding scope name held) predicate in
   call ~loc (ast ~loc join) [ call ~loc (ast ~loc test) [ option_expr ]; predicate ]
 
+(* The code of the [Path.t] of the collection [collection] is: a member of the candidate
+   or of the item. *)
+and source scope (collection : expression) =
+  match place scope collection with
+  | Some place -> collection_of collection place
+  | None ->
+      refuse collection.pexp_loc
+        "a collection of a specification is a member of the candidate or of the item"
+
 (* [List.exists (fun item -> predicate) collection], and the same with [for_all]. *)
 and quantifier scope make collection predicate =
   let loc = collection.pexp_loc in
-  let source =
-    match place scope collection with
-    | Some place -> (
-        match path_of ~loc place with
-        | Some path -> path
-        | None ->
-            refuse loc
-              "a collection of a specification is a member of the candidate or of the \
-               item")
-    | None ->
-        refuse loc
-          "a collection of a specification is a member of the candidate or of the item"
-  in
+  let source = source scope collection in
   let item, predicate =
     closure predicate "the predicate of a collection takes the item: `fun item -> ...`"
   in
   let predicate = expr (inside scope item) predicate in
   call ~loc (ast ~loc make) [ source; predicate ]
+
+(* [List.mem x collection]: some element of the collection is [x], an equality - with a
+   none, the null test. [x] is seen from inside the collection, whose element no name of
+   the function stands for, so the items of enclosing collections are one further out
+   from it. *)
+and contains scope (e : expression) element collection =
+  let loc = e.pexp_loc in
+  let source = source scope collection in
+  let element = expr (inside scope "__specification_element") element in
+  call ~loc (ast ~loc "any_at")
+    [ source; call ~loc (null_test ~loc "equal") [ ast ~loc "itself"; element ] ]
 
 (* ------------------------------------------------------------------------ *)
 (* The signature                                                             *)
@@ -481,8 +527,7 @@ let rec conversion (typ : core_type) =
             | Ldot (Ldot (Lident "Ascetic_specification", "Value"), "t") );
           _;
         },
-        [] ) ->
-      { convert = Fun.id; optional = false }
+        [] ) -> { convert = Fun.id; optional = false }
   | Ptyp_constr ({ txt = Lident "option"; _ }, [ inner ]) ->
       let { convert; _ } = conversion inner in
       let some =
@@ -524,8 +569,7 @@ let structure_items ~loc (pat : pattern) (body : expression) =
             | Some
                 (Pconstraint
                    { ptyp_desc = Ptyp_constr ({ txt = Lident "bool"; _ }, []); _ })
-            | None ->
-                ()
+            | None -> ()
             | Some _ -> refuse body.pexp_loc "a specification returns a bool");
             (List.map parameter params, body)
         | Pexp_function (_, _, Pfunction_cases _) ->
