@@ -93,22 +93,32 @@ let test_a_failure_rolls_both_delegates_back () =
 
 let test_the_inner_delegate_failing_to_commit_rolls_the_outer_back () =
   let session, journal, _ =
-    pair ~fail_second:(function "COMMIT" -> Some "disk full" | _ -> None) ()
+    pair
+      ~fail_second:(function
+        | "COMMIT" -> Some "disk full"
+        | _ -> None)
+      ()
   in
   let result = atomic session (fun _ -> Ok ()) in
   Alcotest.(check (result unit app_error))
     "the inner commit failure is the scope's error"
     (Error (Session (Error.Commit (Driver_error.defect "disk full"))))
     result;
+  (* The inner delegate's refused commit is followed by its rollback, so that nothing
+     stays open behind it (ADR-0034); the outer delegate rolls back on the error. *)
   Alcotest.check entries "the outer delegate rolled back"
-    [ "BEGIN"; "BEGIN"; "ROLLBACK" ]
+    [ "BEGIN"; "BEGIN"; "ROLLBACK"; "ROLLBACK" ]
     (Journal.entries journal)
 
 (* The honest limit: the inner delegate has committed when the outer one
    fails to, and nothing brings it back. That is what a saga is for. *)
 let test_the_outer_delegate_failing_to_commit_leaves_the_inner_committed () =
   let session, journal, _ =
-    pair ~fail_first:(function "COMMIT" -> Some "disk full" | _ -> None) ()
+    pair
+      ~fail_first:(function
+        | "COMMIT" -> Some "disk full"
+        | _ -> None)
+      ()
   in
   let result = atomic session (fun _ -> Ok ()) in
   Alcotest.(check (result unit app_error))
@@ -116,7 +126,7 @@ let test_the_outer_delegate_failing_to_commit_leaves_the_inner_committed () =
     (Error (Session (Error.Commit (Driver_error.defect "disk full"))))
     result;
   Alcotest.check entries "the inner delegate's commit stands"
-    [ "BEGIN"; "BEGIN"; "COMMIT" ]
+    [ "BEGIN"; "BEGIN"; "COMMIT"; "ROLLBACK" ]
     (Journal.entries journal)
 
 let test_nested_composite_scopes_open_savepoints_in_both () =

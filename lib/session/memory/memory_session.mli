@@ -17,8 +17,10 @@
       = [ "BEGIN"; "INSERT INTO orders (id) VALUES (7)"; "COMMIT" ])
     ]}
 
-    [fail] makes a statement fail with the reason it returns, to test the paths a real
-    database takes rarely: a failed commit, a failed rollback. *)
+    [fail] makes a statement fail with the reason it returns - a statement of the
+    session's own, or one a repository double runs through {!run} - to test the paths a
+    real database takes rarely: a failed commit, a failed rollback, a failure inside a
+    scope that aborts the transaction as the server does (ADR-0034). *)
 
 module Journal : sig
   type t
@@ -41,7 +43,13 @@ val create :
 val journal : t -> Journal.t
 
 val record : t -> string -> unit
-(** Records a statement as a repository would run it. *)
+(** Records a statement as a repository would run it; it never fails. *)
+
+val run : t -> string -> (unit, Ascetic_session.Driver_error.t) result
+(** Runs a statement as a repository double would: recorded if it succeeds, refused as
+    [fail] says. As on the server, the first refusal inside a transaction aborts it -
+    every statement after it is refused, and so is the close of a scope that absorbed
+    the refusal, until the transaction ends or is rolled back to a savepoint. *)
 
 val depth : t -> int
 val is_abandoned : t -> bool

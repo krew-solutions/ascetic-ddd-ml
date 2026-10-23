@@ -66,7 +66,39 @@ let test_session_errors_of_the_moment () =
     (Error.is_transient Error.Scope_already_open);
   Alcotest.(check bool)
     "a commit refused for a defect" false
-    (Error.is_transient (Error.Commit (Driver_error.defect "not the driver's")))
+    (Error.is_transient (Error.Commit (Driver_error.defect "not the driver's")));
+  (* An absorbed failure is never of the moment, whatever it was: retrying runs the
+     same code, which absorbs it again (ADR-0034). *)
+  let deadlock = { Error.sqlstate = Some "40P01"; message = "deadlock detected" } in
+  Alcotest.(check bool)
+    "an absorbed deadlock" false
+    (Error.is_transient (Error.Aborted (Some deadlock)));
+  Alcotest.(check bool)
+    "an absorbed failure of no known cause" false
+    (Error.is_transient (Error.Aborted None))
+
+let test_an_aborted_scope_names_the_failure_it_absorbed () =
+  let module Error = Ascetic_session.Session_error in
+  let ends_with ~suffix text =
+    String.length text >= String.length suffix
+    && String.sub text (String.length text - String.length suffix) (String.length suffix)
+       = suffix
+  in
+  let named =
+    Error.to_string
+      (Error.Aborted
+         (Some
+            {
+              Error.sqlstate = Some "23505";
+              message = "duplicate key value violates unique constraint \"held_once\"";
+            }))
+  in
+  Alcotest.(check bool)
+    "the cause after the verdict" true
+    (ends_with ~suffix:"unique constraint \"held_once\" (23505)" named);
+  Alcotest.(check bool)
+    "the verdict alone" true
+    (ends_with ~suffix:"nothing is durable" (Error.to_string (Error.Aborted None)))
 
 let () =
   Alcotest.run "Ascetic_session_caqti"
@@ -85,5 +117,7 @@ let () =
             test_a_connection_that_cannot_be_made_is_of_the_moment;
           Alcotest.test_case "session errors of the moment" `Quick
             test_session_errors_of_the_moment;
+          Alcotest.test_case "an aborted scope names the failure it absorbed" `Quick
+            test_an_aborted_scope_names_the_failure_it_absorbed;
         ] );
     ]

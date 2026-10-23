@@ -3,14 +3,16 @@
     share is everything that makes a scope correct, and what differs is only where the
     statements go. *)
 
+type refusal = Refused of Driver_error.t | Aborted of Session_error.cause option
+
 module type BACKEND = sig
   type conn
 
   val begin_ : conn -> (unit, Driver_error.t) result
-  val commit : conn -> (unit, Driver_error.t) result
+  val commit : conn -> (unit, refusal) result
   val rollback : conn -> (unit, Driver_error.t) result
   val savepoint : conn -> string -> (unit, Driver_error.t) result
-  val release : conn -> string -> (unit, Driver_error.t) result
+  val release : conn -> string -> (unit, refusal) result
   val rollback_to : conn -> string -> (unit, Driver_error.t) result
 end
 
@@ -124,9 +126,21 @@ module Make (B : BACKEND) = struct
             | Ok () ->
                 ended Session_observer.Succeeded;
                 Ok value
-            | Error reason ->
+            | Error refusal ->
+                (* Whatever refused the close, nothing of the scope is durable, and
+                   nothing may stay open behind it: a refused release leaves its
+                   savepoint, an aborted transaction stays aborted until it is rolled
+                   back; after a COMMIT the server refused for a reason of its own the
+                   block is ended, and the rollback is a warning. A scope that did not
+                   commit is a failure of the whole scope: the caller believes the work
+                   is durable, and it is not. *)
+                roll_back shared savepoint;
                 ended Session_observer.Failed;
-                Error (lift (Session_error.Commit reason)))
+                Error
+                  (lift
+                     (match refusal with
+                     | Refused reason -> Session_error.Commit reason
+                     | Aborted cause -> Session_error.Aborted cause)))
         | Error _ as error ->
             roll_back shared savepoint;
             ended Session_observer.Failed;

@@ -19,12 +19,14 @@ let of_error : Caqti_error.t -> bool = function
       match error with
       | `Request_failed { msg; _ } | `Response_failed { msg; _ } -> of_msg msg
       | `Encode_rejected _ | `Encode_failed _ | `Decode_rejected _ | `Response_rejected _
-        ->
-          false)
+        -> false)
   | `Request_failed { msg; _ } | `Response_failed { msg; _ } -> of_msg msg
-  | `Load_rejected _ | `Load_failed _ | `Encode_rejected _ | `Encode_failed _
-  | `Decode_rejected _ | `Response_rejected _ ->
-      false
+  | `Load_rejected _
+  | `Load_failed _
+  | `Encode_rejected _
+  | `Encode_failed _
+  | `Decode_rejected _
+  | `Response_rejected _ -> false
 
 let driver_error error =
   {

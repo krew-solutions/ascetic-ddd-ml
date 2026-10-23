@@ -108,7 +108,11 @@ let test_raising_scope_rolls_back_and_reraises () =
 let test_session_errors_lift_into_the_application_error () =
   let journal = Journal.create () in
   let session =
-    Session.create ~fail:(function "COMMIT" -> Some "disk full" | _ -> None) journal
+    Session.create
+      ~fail:(function
+        | "COMMIT" -> Some "disk full"
+        | _ -> None)
+      journal
   in
   let result = atomic session (fun _ -> Ok ()) in
   Alcotest.(check (result unit app_error))
@@ -172,7 +176,9 @@ let test_a_failed_rollback_abandons_the_session () =
   let journal = Journal.create () in
   let session =
     Session.create
-      ~fail:(function "ROLLBACK TO SAVEPOINT sp1" -> Some "connection lost" | _ -> None)
+      ~fail:(function
+        | "ROLLBACK TO SAVEPOINT sp1" -> Some "connection lost"
+        | _ -> None)
       journal
   in
   let result =
@@ -244,6 +250,142 @@ let test_the_pool_scope_is_observed_and_is_not_a_transaction () =
   Alcotest.check entries "no transaction" [ "SELECT 1" ]
     (Journal.entries (Pool.journal pool))
 
+(* ------------------- an absorbed failure (ADR-0034) -------------------- *)
+
+let absorbed cause =
+  Error (Session (Error.Aborted (Some { Error.sqlstate = None; message = cause })))
+let refusing statement reason sql = if sql = statement then Some reason else None
+
+(* A scope that catches a refused statement and carries on reports success while the
+   server, which aborts a transaction on its first failed statement, has nothing left to
+   commit. The scope is refused instead, naming the failure it absorbed, and rolled back;
+   the connection is whole, and serves the next scope. *)
+let test_a_scope_that_absorbed_a_failed_statement_is_aborted () =
+  let journal = Journal.create () in
+  let observer, seen = recording () in
+  let session =
+    Session.create ~observer ~fail:(refusing "INSERT 2" "duplicate key") journal
+  in
+  let result =
+    atomic session (fun session ->
+        Session.record session "INSERT 1";
+        (* "Held already": the refusal absorbed, the scope going on. *)
+        let _ = Session.run session "INSERT 2" in
+        Ok ())
+  in
+  Alcotest.(check (result unit app_error))
+    "refused, the failure named" (absorbed "duplicate key") result;
+  Alcotest.check entries "rolled back, nothing committed"
+    [ "BEGIN"; "INSERT 1"; "ROLLBACK" ]
+    (Journal.entries journal);
+  Alcotest.check entries "the scope ended as failed"
+    [ "started 1 transaction"; "failed 1 transaction" ]
+    (seen ());
+  Alcotest.(check bool) "the connection is whole" false (Session.is_abandoned session);
+  Alcotest.(check (result unit app_error))
+    "the next scope commits" (Ok ())
+    (atomic session (fun session ->
+         Session.record session "INSERT 3";
+         Ok ()));
+  Alcotest.check entries "journal"
+    [ "BEGIN"; "INSERT 1"; "ROLLBACK"; "BEGIN"; "INSERT 3"; "COMMIT" ]
+    (Journal.entries journal)
+
+(* After the abort every statement is refused until the transaction ends: a scope that
+   absorbs the first refusal and the ones after it is refused with the first. *)
+let test_every_statement_after_the_abort_is_refused () =
+  let journal = Journal.create () in
+  let session = Session.create ~fail:(refusing "INSERT 2" "duplicate key") journal in
+  let result =
+    atomic session (fun session ->
+        let _ = Session.run session "INSERT 2" in
+        let later = Session.run session "INSERT 3" in
+        Alcotest.(check bool) "refused for the abort" true (Result.is_error later);
+        Ok ())
+  in
+  Alcotest.(check (result unit app_error))
+    "the first is named" (absorbed "duplicate key") result;
+  Alcotest.check entries "nothing ran after the abort" [ "BEGIN"; "ROLLBACK" ]
+    (Journal.entries journal)
+
+(* A nested scope that absorbed a refusal is rolled back to its savepoint and refused;
+   the enclosing transaction stays alive, so its caller may absorb that refusal and
+   commit the rest. *)
+let test_a_nested_scope_that_absorbed_a_refusal_is_aborted_and_the_outer_goes_on () =
+  let journal = Journal.create () in
+  let session = Session.create ~fail:(refusing "INSERT 2" "duplicate key") journal in
+  let result =
+    atomic session (fun session ->
+        Session.record session "INSERT 1";
+        let inner =
+          atomic session (fun session ->
+              let _ = Session.run session "INSERT 2" in
+              Ok ())
+        in
+        Alcotest.(check (result unit app_error))
+          "the nested scope is refused" (absorbed "duplicate key") inner;
+        Result.map_error
+          (fun (reason : Driver_error.t) -> Refused reason.text)
+          (Session.run session "INSERT 3"))
+  in
+  Alcotest.(check (result unit app_error)) "the outer transaction commits" (Ok ()) result;
+  Alcotest.check entries "journal"
+    [
+      "BEGIN";
+      "INSERT 1";
+      "SAVEPOINT sp1";
+      "ROLLBACK TO SAVEPOINT sp1";
+      "INSERT 3";
+      "COMMIT";
+    ]
+    (Journal.entries journal)
+
+(* A close the backend refuses for a reason of its own leaves nothing open behind it:
+   the scope is rolled back, to its savepoint or wholly, and the refusal is the scope's
+   error. *)
+let test_a_refused_close_rolls_the_scope_back () =
+  let journal = Journal.create () in
+  let session =
+    Session.create
+      ~fail:(function
+        | "COMMIT" -> Some "disk full"
+        | "RELEASE SAVEPOINT sp1" -> Some "no such savepoint"
+        | _ -> None)
+      journal
+  in
+  let result =
+    atomic session (fun session ->
+        Session.record session "INSERT 1";
+        Alcotest.(check (result unit app_error))
+          "the nested close refused"
+          (Error (Session (Error.Commit (Driver_error.defect "no such savepoint"))))
+          (atomic session (fun _ -> Ok ()));
+        Ok ())
+  in
+  Alcotest.(check (result unit app_error))
+    "refused"
+    (Error (Session (Error.Commit (Driver_error.defect "disk full"))))
+    result;
+  Alcotest.check entries "journal"
+    [ "BEGIN"; "INSERT 1"; "SAVEPOINT sp1"; "ROLLBACK TO SAVEPOINT sp1"; "ROLLBACK" ]
+    (Journal.entries journal)
+
+(* A statement that failed outside any transaction aborted nothing: the next scope on
+   the session begins clean and commits. *)
+let test_a_failure_before_a_scope_does_not_abort_it () =
+  let journal = Journal.create () in
+  let session = Session.create ~fail:(refusing "INSERT 2" "duplicate key") journal in
+  let _ = Session.run session "INSERT 2" in
+  let result =
+    atomic session (fun session ->
+        Session.record session "INSERT 3";
+        Ok ())
+  in
+  Alcotest.(check (result unit app_error)) "the scope commits" (Ok ()) result;
+  Alcotest.check entries "journal"
+    [ "BEGIN"; "INSERT 3"; "COMMIT" ]
+    (Journal.entries journal)
+
 (* A session rolls back under [Eio.Cancel.protect], so even the in-memory
    one runs inside an Eio fiber. *)
 let () =
@@ -289,5 +431,20 @@ let () =
         [
           Alcotest.test_case "the pool scope is observed and is not a transaction" `Quick
             test_the_pool_scope_is_observed_and_is_not_a_transaction;
+        ] );
+      ( "an absorbed failure",
+        [
+          Alcotest.test_case "a scope that absorbed a failed statement is aborted" `Quick
+            test_a_scope_that_absorbed_a_failed_statement_is_aborted;
+          Alcotest.test_case "every statement after the abort is refused" `Quick
+            test_every_statement_after_the_abort_is_refused;
+          Alcotest.test_case
+            "a nested scope that absorbed a refusal is aborted and the outer goes on"
+            `Quick
+            test_a_nested_scope_that_absorbed_a_refusal_is_aborted_and_the_outer_goes_on;
+          Alcotest.test_case "a refused close rolls the scope back" `Quick
+            test_a_refused_close_rolls_the_scope_back;
+          Alcotest.test_case "a failure before a scope does not abort it" `Quick
+            test_a_failure_before_a_scope_does_not_abort_it;
         ] );
     ]

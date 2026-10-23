@@ -19,7 +19,9 @@ let of_string name =
   else Ok name
 
 let of_string_exn name =
-  match of_string name with Ok name -> name | Error reason -> invalid_arg reason
+  match of_string name with
+  | Ok name -> name
+  | Error reason -> invalid_arg reason
 
 let to_string name = name
 let equal = String.equal

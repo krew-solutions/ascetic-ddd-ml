@@ -5,6 +5,11 @@
 Accepted (2026-09-15). Implemented as `lib/session`, beside
 `lib/unit_of_work`, which the outbox and the inbox keep using for now.
 
+Amended 2026-10-23 by ADR-0034: the close of a scope is the server's verdict
+- a scope that absorbed a failed statement is refused with
+`Session_error.Aborted` and rolled back, and a refused close leaves nothing
+open behind it.
+
 ## Context
 
 `Unit_of_work.S` exposed `commit` and `rollback` and no way to begin, so a

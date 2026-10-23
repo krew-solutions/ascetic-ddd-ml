@@ -2,9 +2,12 @@
     {!Caqti_session_pool}. A repository pins [type uow = Caqti_session.t] and reaches the
     connection through {!Caqti_session.connection}. Beside them, what every PostgreSQL
     adapter over this session needs: {!Identifier}, a table name safe to splice into SQL,
-    and {!Transient}, which errors of the database are of the moment. *)
+    {!Transient}, which errors of the database are of the moment, and {!Remembering},
+    the connection the session hands out, which remembers the failures of the statements
+    run through it. *)
 
 module Caqti_session = Caqti_session
 module Caqti_session_pool = Caqti_session_pool
 module Identifier = Identifier
 module Transient = Transient
+module Remembering = Remembering

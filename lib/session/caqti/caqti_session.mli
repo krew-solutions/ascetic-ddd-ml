@@ -5,6 +5,12 @@
     named from a counter shared by the session tree. A Caqti connection serves one fiber
     at a time, so work inside a scope is sequential.
 
+    The connection a repository is handed remembers the first failure the server reported
+    through it. A scope that absorbed a failed statement and reported success is not
+    committed into nothing, as the server would have it: the close asks the server
+    whether the transaction is whole, where a statement failed, and refuses the scope with
+    [Session_error.Aborted], the failure named, rolling it back (ADR-0034).
+
     Only {!connection} and the accessors below are more than the port shows, and they are
     reachable only where [type uow = Caqti_session.t] is written, which is the
     infrastructure layer. *)
@@ -19,7 +25,9 @@ val create :
 
 val connection : t -> (module Caqti_eio.CONNECTION)
 (** The capability a repository asks for: the connection of the current scope. Statements
-    run through it take part in the scope's transaction. *)
+    run through it take part in the scope's transaction, and their failures are
+    remembered for the scope's close; a statement run past it, on the connection the
+    session was created over, is not. *)
 
 val depth : t -> int
 (** Number of transaction scopes open around this session: 0 outside any. *)

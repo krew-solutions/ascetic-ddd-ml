@@ -91,13 +91,60 @@ can fail on its own. Apply `lift` once per use case, as in the quick start.
 |---|---|
 | `Acquire` | no connection could be taken from the pool |
 | `Begin` | `BEGIN` or `SAVEPOINT` failed |
-| `Commit` | `COMMIT` or `RELEASE SAVEPOINT` failed: the caller believes the work is durable and it is not |
+| `Commit` | `COMMIT` or `RELEASE SAVEPOINT` failed for a reason of its own; the scope was rolled back, and the caller who believed the work durable is told it is not |
+| `Aborted` | the scope reported success over a statement that had failed inside it; the transaction was aborted and the scope rolled back, nothing is durable; see below |
 | `Scope_already_open` | a second scope was opened on the session that already has one open |
 | `Abandoned` | a rollback failed or was cut short; see below |
 
 A scope that returns `Error` is rolled back and the error comes back as is.
 A scope that raises is rolled back and the exception is re-raised. A failing
 rollback never replaces the error that caused it.
+
+## An absorbed failure
+
+The server alone knows whether a transaction is still whole. A statement
+that fails inside it aborts it, and a scope that catches the failure and
+goes on would otherwise be committed into nothing: PostgreSQL answers a
+`COMMIT` in that state with a rollback and no error, and the driver keeps
+the answer's tag to itself. So the close of a scope that succeeded is the
+server's verdict: a nested scope is closed with `RELEASE SAVEPOINT`, which
+the server refuses with `25P02` in an aborted transaction; the outermost
+asks first, `SELECT 1`, refused the same way, and commits if the probe is
+answered. A refused close rolls the scope back - to its savepoint, so the
+enclosing transaction goes on - and becomes `Session_error.Aborted`, naming
+the failure the scope absorbed, its SQLSTATE and the server's message; a
+`COMMIT` the server refused for a reason of its own, a deferred constraint,
+becomes `Session_error.Commit`. Either way nothing of the scope is durable,
+and `Aborted` is never of the moment: retrying runs the same code, which
+absorbs the failure again. ADR-0034 has the measurements.
+
+The probe is a round trip of its own, since Caqti sends every request
+through the extended protocol, one statement at a time, and it is sent
+only where there is reason to doubt: the connection a repository is handed
+remembers the first failure the server reported through it, and a
+transaction no statement failed in is whole by the server's own rule. The
+memory decides nothing but whether the server is asked; a statement run
+past the connection the session hands out, on the one the session was
+created over, is not remembered, which is why the session's own
+connection is the capability a repository gets.
+
+**A server error inside a transaction is never absorbed in the scope that
+met it.** A refusal meant to be absorbed - a row held already, a race whose
+winner will be found - is met in a nested scope of its own; the nested
+scope fails, its savepoint is rolled back, and the enclosing scope maps the
+failure to its meaning and goes on:
+
+```ocaml
+atomic session (fun session ->
+    let* () = Orders.save session order in
+    match atomic session (fun session -> Grants.insert session grant) with
+    | Ok () | Error (Grant Already_held) -> Ok ()    (* only the INSERT is undone *)
+    | Error other -> Error other)
+```
+
+Or the statement makes the refusal an outcome rather than an error,
+`ON CONFLICT ... DO NOTHING` covering the index that refuses, where the
+outcome alone tells what happened.
 
 ## Nesting and the guard
 
@@ -160,11 +207,14 @@ assert (Memory_session.Journal.entries (Memory_session_pool.journal pool)
 ```
 
 `?fail` makes a chosen statement fail, to exercise the paths a real database
-takes rarely: a failed commit, a failed rollback. The in-memory session runs
-the same scope algorithm as the PostgreSQL one, over another backend, so
-what a journal test proves about nesting, failure paths, the guard and
-cancellation holds for both; `test/session/test_pg.ml` checks the backend
-itself against a live database.
+takes rarely: a failed commit, a failed rollback, and, through
+`Memory_session.run`, a statement of a repository double refused inside a
+scope, which aborts the transaction as the server does. The in-memory
+session runs the same scope algorithm as the PostgreSQL one, over another
+backend, so what a journal test proves about nesting, failure paths, the
+guard, cancellation and an absorbed failure holds for both;
+`test/session/test_pg.ml` checks the backend itself against a live
+database.
 
 Sessions run inside an Eio fiber, the in-memory one included, because the
 rollback is protected from cancellation.
@@ -249,9 +299,12 @@ as for every session of this library and for the reason given below.
 ## PostgreSQL
 
 `Caqti_session` issues the outermost scope through the driver's `start`,
-`commit` and `rollback`, and savepoints as one-shot statements. A Caqti
-connection serves one fiber at a time, so work inside a scope is
-sequential; concurrency comes from the pool, one session per fiber.
+`commit` and `rollback`, and savepoints as one-shot statements. The
+connection it hands a repository, `Caqti_session.connection`, is the
+driver's behind `Remembering`, which keeps the first failure the server
+reported through it for the close of the scope. A Caqti connection serves
+one fiber at a time, so work inside a scope is sequential; concurrency comes
+from the pool, one session per fiber.
 
 The pool must outlive every fiber that takes a session from it (ADR-0015).
 Caqti drains a pool when the switch it was connected on ends, and waits for
@@ -284,7 +337,8 @@ moment, told by SQLSTATE class from the driver's error, so that a loop
 meeting one waits and goes on rather than stopping (ADR-0009). Its verdict
 travels in `Driver_error.t`, the text the driver rendered and whether the
 failure is of the moment, which `Session_error.t` carries in `Acquire`,
-`Begin`, `Commit` and `Abandoned`, and `Session_error.is_transient` reads.
+`Begin`, `Commit` and `Abandoned`, and `Session_error.is_transient` reads;
+an absorbed failure, `Aborted`, is never of the moment.
 
 The identity map of the Python and Rust ports is deliberately not here:
 with immutable aggregates, two loads of one row are two equal values with

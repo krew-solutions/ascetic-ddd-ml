@@ -3,17 +3,33 @@
     share is everything that makes a scope correct, and what differs is only where the
     statements go. *)
 
+(** What the close of a scope that succeeded is refused with. *)
+type refusal =
+  | Refused of Driver_error.t
+      (** For a reason of the close's own: the server refused the commit, the connection
+          was lost on the way. *)
+  | Aborted of Session_error.cause option
+      (** The transaction was aborted by a statement that failed inside it, whose failure
+          the scope absorbed: there was nothing left to commit. The cause, where the
+          backend saw the failure. *)
+
 (** What a backend issues: the six statements of a scope. Each says, when it fails, what
     the driver said and whether the failure is of the moment; none raises for a failure of
-    the driver, so that a scope unwinds with errors rather than exceptions. *)
+    the driver, so that a scope unwinds with errors rather than exceptions.
+
+    [commit] and [release] close a scope that succeeded, and the server alone knows whether
+    the transaction is still whole: a statement that failed inside it aborted it, and a
+    scope that absorbed the failure would otherwise be committed into nothing. The backend
+    asks the server where it has reason to doubt, and answers [Aborted] where the
+    transaction was aborted (ADR-0034). *)
 module type BACKEND = sig
   type conn
 
   val begin_ : conn -> (unit, Driver_error.t) result
-  val commit : conn -> (unit, Driver_error.t) result
+  val commit : conn -> (unit, refusal) result
   val rollback : conn -> (unit, Driver_error.t) result
   val savepoint : conn -> string -> (unit, Driver_error.t) result
-  val release : conn -> string -> (unit, Driver_error.t) result
+  val release : conn -> string -> (unit, refusal) result
   val rollback_to : conn -> string -> (unit, Driver_error.t) result
 end
 
