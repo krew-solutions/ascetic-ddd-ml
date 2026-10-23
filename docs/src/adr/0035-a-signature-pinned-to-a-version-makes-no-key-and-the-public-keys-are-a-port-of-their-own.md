@@ -6,8 +6,10 @@ Accepted (2026-10-23). Follows the decision taken first in the Rust
 reference implementation (its ADR-0019, 2026-10-18, amended 2026-10-23
 twice: a refusal of `verify` read as a pinned signature's, and the
 alternatives to deriving the public half weighed), whose measurements on
-Vault 1.21.4 are the facts below; this port's live tests ran on the
-Vault 1.17.6 of `docker-compose.yml` and found the same answers. Held by
+Vault 1.21.4 are the facts below; this port's live tests ran on the Vault
+1.17.6 the `docker-compose.yml` of the day named and found the same
+answers, and run on 1.21.4 since the same day, the image moved to the
+`1.21` line with this decision. Held by
 `test/kms/vault/test_vault_transit.ml` (the adapter's reading of Transit's
 answers against a scripted transport: a pinned signature asks its version
 and no `POST keys`, a signature by another version is refused, every
@@ -77,7 +79,7 @@ things, each of which holds of this port as it stood:
   coordinates are cut from.
 
 Measured on Vault 1.21.4 OSS, Transit, `ecdsa-p256` and `ed25519`, and
-found the same on 1.17.6 by this port's live tests:
+found the same on 1.17.6 and on 1.21.4 by this port's live tests:
 
 - `POST sign/{name}` with `key_version` on a key that does not exist: `400`
   `signing key not found`; `GET keys/{name}`: `404`.

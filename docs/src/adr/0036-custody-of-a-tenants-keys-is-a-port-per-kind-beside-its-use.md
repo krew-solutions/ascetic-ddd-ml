@@ -69,7 +69,7 @@ And the KEK's retirement as built had two defects:
   a `400`.
 
 Measured by the reference on Vault 1.21.4 OSS, Transit, and found the same
-on 1.17.6 by this port's live tests:
+on 1.17.6 and on 1.21.4 by this port's live tests:
 
 - `POST keys/{name}` on a new key answers with the key's description
   (`data.type`, `data.latest_version`); on a key that exists with another
@@ -188,12 +188,13 @@ on 1.17.6 by this port's live tests:
    so: the argument is new here, and its default keeps the keys made on
    first use. A consumer that opts in gets the adapters' behaviour, which
    is the point of the in-memory keys.
-4. *The reference measured on 1.21.4 and this port's compose file runs
+4. *The reference measured on 1.21.4 and this port's compose file ran
    1.17.6; the answers may differ.* They were found the same by the live
-   tests, which pin them; where a later Vault answers otherwise, the tests
-   say so at the upgrade, and the reading by one read of the key is what
-   makes the adapter indifferent to the status within `400`, `403` and
-   `500`.
+   tests on both, which pin them; the compose file names the `1.21` line
+   since this decision, so the live tests run where the reference
+   measured. Where a later Vault answers otherwise, the tests say so at the
+   upgrade, and the reading by one read of the key is what makes the
+   adapter indifferent to the status within `400`, `403` and `500`.
 
 ## Consequences
 
