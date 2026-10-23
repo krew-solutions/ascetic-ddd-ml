@@ -24,12 +24,7 @@ module Counting = struct
   let generate_dek _ _ ~tenant_id:_ =
     Ok (Key.of_string (String.make 32 '\007'), String.make 32 '\007')
 
-  let rotate_kek _ _ ~tenant_id:_ = Ok Key_version.first
   let rewrap_dek _ _ ~tenant_id:_ encrypted_dek = Ok encrypted_dek
-
-  let delete_kek t _ ~tenant_id:_ =
-    t.deletes <- t.deletes + 1;
-    Ok ()
 end
 
 module Cached_counting = Cached.Make (Counting)
@@ -112,20 +107,6 @@ let test_a_key_is_asked_for_again_after_its_time_to_live () =
       Alcotest.(check int) "asked again" 2 (unwraps ());
       Alcotest.(check int) "the expired one made room" 1 (Cached_counting.length cached))
 
-let test_deleting_a_tenant_s_kek_forgets_its_keys_here () =
-  let cached = Cached_counting.create ~clock:(clock ()) (Counting.create ()) in
-  with_session (fun session ->
-      ignore (unwrap cached session ~tenant_id:"t1" "wrapped-1");
-      ignore (unwrap cached session ~tenant_id:"t2" "wrapped-1");
-      Alcotest.(check bool)
-        "deleted" true
-        (Cached_counting.delete_kek cached session ~tenant_id:"t1" = Ok ());
-      Alcotest.(check int) "one held" 1 (Cached_counting.length cached);
-      ignore (unwrap cached session ~tenant_id:"t2" "wrapped-1");
-      Alcotest.(check int)
-        "the other tenant's key is still held" 2
-        (Counting.unwraps (Cached_counting.inner cached)))
-
 let test_a_refusal_is_not_kept () =
   let cached = Cached_counting.create ~clock:(clock ()) (Counting.create ()) in
   with_session (fun session ->
@@ -145,13 +126,39 @@ module Counting_with_custody = struct
   include Counting
 
   let create_kek _ _ ~tenant_id:_ (_ : Kek_options.t) = Ok Key_version.first
+  let rotate_kek _ _ ~tenant_id:_ = Ok (Key_version.of_int_exn 2)
 
   let retire_kek_versions_before t _ ~tenant_id:_ _ =
+    t.deletes <- t.deletes + 1;
+    Ok ()
+
+  let delete_kek t _ ~tenant_id:_ =
     t.deletes <- t.deletes + 1;
     Ok ()
 end
 
 module Cached_with_custody = Cached.With_custody (Counting_with_custody)
+
+let test_deleting_a_tenant_s_kek_forgets_its_keys_here () =
+  let cached =
+    Cached_with_custody.create ~clock:(clock ()) (Counting_with_custody.create ())
+  in
+  with_session (fun session ->
+      let unwrap tenant_id wrapped =
+        match Cached_with_custody.decrypt_dek cached session ~tenant_id wrapped with
+        | Ok key -> key
+        | Error e -> Alcotest.failf "decrypt_dek: %a" Kms_error.pp e
+      in
+      ignore (unwrap "t1" "wrapped-1");
+      ignore (unwrap "t2" "wrapped-1");
+      Alcotest.(check bool)
+        "deleted" true
+        (Cached_with_custody.delete_kek cached session ~tenant_id:"t1" = Ok ());
+      Alcotest.(check int) "one held" 1 (Cached_with_custody.length cached);
+      ignore (unwrap "t2" "wrapped-1");
+      Alcotest.(check int)
+        "the other tenant's key is still held" 2
+        (Counting.unwraps (Cached_with_custody.inner cached)))
 
 let test_retiring_a_tenant_s_versions_forgets_its_keys_here () =
   let cached =
@@ -169,6 +176,11 @@ let test_retiring_a_tenant_s_versions_forgets_its_keys_here () =
         "custody passes through" true
         (Cached_with_custody.create_kek cached session ~tenant_id:"t1" Kek_options.default
         = Ok Key_version.first);
+      Alcotest.(check bool)
+        "a rotation passes through, forgetting nothing" true
+        (Cached_with_custody.rotate_kek cached session ~tenant_id:"t1"
+         = Ok (Key_version.of_int_exn 2)
+        && Cached_with_custody.length cached = 2);
       Alcotest.(check bool)
         "retired" true
         (Cached_with_custody.retire_kek_versions_before cached session ~tenant_id:"t1"
@@ -190,9 +202,6 @@ let test_everything_else_passes_through () =
       Alcotest.(check bool)
         "rewrap_dek" true
         (Cached_counting.rewrap_dek cached session ~tenant_id:"t1" "w" = Ok "w");
-      Alcotest.(check bool)
-        "rotate_kek" true
-        (Cached_counting.rotate_kek cached session ~tenant_id:"t1" = Ok Key_version.first);
       Alcotest.(check bool)
         "generate_dek" true
         (Result.is_ok (Cached_counting.generate_dek cached session ~tenant_id:"t1"));

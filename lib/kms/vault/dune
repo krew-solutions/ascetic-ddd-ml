@@ -1,4 +1,9 @@
 (library
  (name ascetic_kms_vault)
  (public_name ascetic_ddd.kms.vault)
- (libraries ascetic_ddd.kms ascetic_ddd.session ascetic_ddd.session.rest base64 yojson))
+ (libraries
+  ascetic_ddd.kms
+  ascetic_ddd.session
+  ascetic_ddd.session.rest
+  base64
+  yojson))

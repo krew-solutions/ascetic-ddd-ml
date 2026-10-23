@@ -5,6 +5,7 @@
   ascetic_ddd.kms
   ascetic_ddd.session
   ascetic_ddd.session.memory
+  ascetic_kms_test_custody
   alcotest
   eio
   eio.mock
@@ -19,6 +20,7 @@
   ascetic_ddd.kms.pg
   ascetic_ddd.session
   ascetic_ddd.session.caqti
+  ascetic_kms_test_custody
   alcotest
   caqti
   caqti-eio

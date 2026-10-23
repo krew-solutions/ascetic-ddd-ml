@@ -4,13 +4,15 @@
     kept: a consumer that opens a thousand messages sealed under one DEK, or a store that
     loads every version of a resource's keys, asks the service once instead of a thousand
     times, which matters when the service is a network away, Vault. Everything else passes
-    through, and deleting a tenant's KEK forgets what was cached for the tenant here;
-    elsewhere the cache's time to live is the bound, so a shredded tenant's keys open for
-    that long at most. That, and keys held in memory for that long, is the price; the
-    capacity bounds the memory. A refusal is not kept.
+    through; the cache's time to live is the bound on what was unwrapped, so a shredded
+    tenant's keys open for that long at most, unless the deletion or the retirement goes
+    through {!With_custody}, which forgets the tenant's keys here. That, and keys held in
+    memory for that long, is the price; the capacity bounds the memory. A refusal is not
+    kept.
 
-    The signing and MAC ports are not served here: a signature and a verification are not
-    functions of the cache's key, and an adapter that serves them is called directly. *)
+    The signing, MAC and public key ports are not served here: a signature, a
+    verification and a keyring are not functions of the cache's key, and an adapter that
+    serves them is called directly. *)
 
 (** What a cache offers beside the port it serves. *)
 module type S = sig
@@ -43,14 +45,15 @@ module type S = sig
 
   val forget : t -> tenant_id:string -> unit
   (** Forgets the tenant's keys held here: what a deletion or a retirement does on its way
-      through the cache, for a caller that did either behind the cache's back. *)
+      through {!With_custody}, for a caller that did either behind the cache's back. *)
 end
 
 module Make (K : Kms_port.S) : S with type service = K.t and type session = K.session
 
 (** The same cache over a service that has custody of the keys too: custody passes
-    through, and retiring a tenant's versions forgets the tenant's keys held here, as a
-    deletion does, where the time to live would bound it otherwise (ADR-0024). *)
+    through, and retiring a tenant's versions or deleting its KEK forgets the tenant's
+    keys held here, where the time to live would bound it otherwise (ADR-0024,
+    ADR-0036). *)
 module With_custody (K : sig
   include Kms_port.S
   include Key_custody.S with type t := t and type session := session

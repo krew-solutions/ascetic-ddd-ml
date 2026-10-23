@@ -10,6 +10,7 @@
   base64
   eio
   eio_main
+  str
   yojson))
 
 (tests
@@ -23,6 +24,7 @@
   ascetic_ddd.kms.vault.cohttp
   ascetic_ddd.session
   ascetic_ddd.session.rest
+  ascetic_kms_test_custody
   alcotest
   base64
   cohttp-eio

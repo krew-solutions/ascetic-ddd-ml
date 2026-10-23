@@ -22,6 +22,12 @@ val of_int : int -> (t, Kms_error.t) result
 val of_int_exn : int -> t
 (** {!of_int}, raising [Invalid_argument] on a number refused: for literals. *)
 
+val from_one : t -> (t, Kms_error.t) result
+(** The version, if it is one a key can have: versions of a tenant's keys start at
+    {!first}, and [Malformed] names version 0, which the wire can carry and no key is.
+    What a signature pinned to a version is checked by before the KMS is asked, since
+    Transit reads zero as the latest (ADR-0035). *)
+
 val to_int : t -> int
 
 val next : t -> (t, Kms_error.t) result

@@ -19,6 +19,13 @@ KEK serving a context binds what it wraps to it; the binding's bytes) and
 seal and open; another channel's stage is refused for good; the sealing
 of a service's channels is built up front and answers for those alone).
 
+Amended 2026-10-23 by ADR-0036: point 3, `managed_keys` covers every kind
+of key, `sign` and `mac` as well as the wraps; point 4, `Key_custody.S`
+takes `rotate_kek` and `delete_kek` from `Kms_port.S`, a rotation never
+makes the first version, and a retirement reads the latest version first,
+refuses a bound above it and never lowers the floor, on Vault by one read
+before the write, on PostgreSQL under the tenant's lock.
+
 ## Context
 
 `Envelope_stage.Make` seals a message's payload under a DEK wrapped by the

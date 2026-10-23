@@ -1,6 +1,6 @@
 (** The PostgreSQL key management service: a tenant's keys in tables, each wrapped by the
-    master key. One adapter serves the four ports: the KEKs, their custody, the signing
-    keys and the MAC keys.
+    master key. One adapter serves every port: the KEKs, the signing keys, their public
+    halves and the MAC keys, and the custody of each kind.
 
     {2 The tables}
 
@@ -14,12 +14,15 @@
     [kms_signing_keys (tenant_id, algorithm, key_version, encrypted_key, public_key,
      master_algorithm, created_at)]: the private half wrapped by the master key under the
     key's name, [{tenant}.sign.{algorithm}], as its associated data, so that a key wrapped
-    for one tenant or algorithm does not open as another's; the public half beside it, so
-    that verifying unwraps nothing. [kms_mac_keys (tenant_id, purpose, key_version,
-     encrypted_key, master_algorithm, created_at)]: the key wrapped under
-    [{tenant}.mac.{purpose}]. The signing, verifying and MACs are the model's, in this
-    process, in the byte forms the ports fix, the same the Vault adapter asks Transit for
-    (ADR-0023).
+    for one tenant or algorithm does not open as another's; the public half beside it,
+    which is never trusted on its own: verifying and publishing unwrap the private half,
+    derive the public half from it and check the column against it, since a writer of the
+    table without the master key can change the column and never the wrapped private
+    half, so a mismatch is a tamper, [Malformed], refused rather than verified under or
+    published (ADR-0035). [kms_mac_keys (tenant_id, purpose, key_version, encrypted_key,
+     master_algorithm, created_at)]: the key wrapped under [{tenant}.mac.{purpose}]. The
+    signing, verifying and MACs are the model's, in this process, in the byte forms the
+    ports fix, the same the Vault adapter asks Transit for (ADR-0023).
 
     {2 A derivation context, and keys made elsewhere}
 
@@ -27,21 +30,30 @@
     that binds the wrap to the context beside the tenant: what was wrapped for one channel
     of the bus does not unwrap for another, as under a derived key of Vault's. The rows
     are the same; the binding is the wrap's. Built with [managed_keys], the service makes
-    no KEK on first contact: a tenant without one is [Kek_not_found] on every wrap, and
-    the key is made by whoever has custody, under the same lock (ADR-0024).
+    no key of any kind on first use: a tenant without one is [Kek_not_found] on every
+    wrap, [Signing_key_not_found] on [sign], [Mac_key_not_found] on [mac], and the key is
+    made by whoever has custody, under the same lock (ADR-0024, ADR-0036).
+
+    {2 Custody}
+
+    The custody of each kind of key is served with the rules of ADR-0036: making is
+    idempotent, a rotation never makes the first version, a retirement reads the latest
+    version first, refuses a bound above it and deletes the rows below the bound, which
+    is final here, the latest never going, and a deletion of nothing is nothing. A
+    rotation period is refused as [Unsupported]: there is no scheduler in a table.
 
     {2 Locks}
 
-    Making a tenant's first key, and rotating, take
+    Making a tenant's first key, rotating and retiring take
     [pg_advisory_xact_lock(hashtext(table), hashtext(name))], the tenant's id for a KEK
     and the key's name for a signing or MAC key, in a scope of their own: a savepoint
     inside the caller's transaction, where the lock stays with the transaction to its end,
     and a transaction of its own when the caller has none, where the lock lasts as long as
     the making does. Either way two callers meeting a new keyring at once make one key,
     the second reading what the first committed, instead of both making version 1 and
-    one failing on the primary key; two rotations at once make versions two and three,
-    not one and an error. Reads take nothing. READ COMMITTED is assumed: the read after
-    the lock is in a snapshot of its own, so it sees what the lock's previous holder
+    one failing on the primary key; two rotations at once make the next two versions, not
+    one and an error. Reads take nothing. READ COMMITTED is assumed: the read after the
+    lock is in a snapshot of its own, so it sees what the lock's previous holder
     committed.
 
     {2 What this adapter is}
@@ -61,7 +73,10 @@ type t
 include Ascetic_kms.Kms_port.S with type t := t and type session = Session.t
 include Ascetic_kms.Key_custody.S with type t := t and type session := session
 include Ascetic_kms.Signing_port.S with type t := t and type session := session
+include Ascetic_kms.Signing_key_custody.S with type t := t and type session := session
+include Ascetic_kms.Public_key_port.S with type t := t and type session := session
 include Ascetic_kms.Mac_port.S with type t := t and type session := session
+include Ascetic_kms.Mac_key_custody.S with type t := t and type session := session
 
 val create :
   ?master_algorithm:Ascetic_kms.Algorithm.t ->
@@ -81,8 +96,8 @@ val create :
 
     [derivation_context] binds every KEK operation to a channel of the bus: one instance
     per channel, built in the composition root from the channel's name. [managed_keys]
-    makes no KEK on first contact: for a producer or a consumer of the bus, whose keys are
-    made by whoever has custody. *)
+    makes no key on first use: for a producer or a consumer of the bus, or a holder that
+    signs and MACs, whose keys are made by whoever has custody. *)
 
 val table : t -> Identifier.t
 (** The table the KEKs are in. *)

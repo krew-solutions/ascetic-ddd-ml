@@ -113,6 +113,8 @@ let versions_of f tenant_id =
       | Ok versions -> Ok versions
       | Error err -> Alcotest.failf "versions_of: %a" Caqti_error.pp err)
 
+(* Custody makes the tenant's first KEK; a rotation never does. *)
+let make f tx tenant_id = Pg_kms.create_kek f.kms tx ~tenant_id Kek_options.default
 let rotate f tx tenant_id = Pg_kms.rotate_kek f.kms tx ~tenant_id
 
 (* ------------------------------------------------------------------------ *)
@@ -122,7 +124,7 @@ let test_a_dek_wrapped_after_a_rotation_unwraps env uri =
   with_fixture ~name:"rotate_and_wrap" env uri @@ fun f ->
   get "atomic"
     (atomic f (fun tx ->
-         let* _ = rotate f tx "1" in
+         let* _ = make f tx "1" in
          let dek = key () in
          let* wrapped = Pg_kms.encrypt_dek f.kms tx ~tenant_id:"1" dek in
          Alcotest.check unwrapped "unwraps" (Ok dek)
@@ -133,7 +135,7 @@ let test_a_generated_dek_is_thirty_two_bytes_and_unwraps env uri =
   with_fixture ~name:"generate_dek" env uri @@ fun f ->
   get "atomic"
     (atomic f (fun tx ->
-         let* _ = rotate f tx "1" in
+         let* _ = make f tx "1" in
          let* dek, wrapped = Pg_kms.generate_dek f.kms tx ~tenant_id:"1" in
          Alcotest.(check int) "thirty-two bytes" 32 (Key.length dek);
          Alcotest.check unwrapped "unwraps" (Ok dek)
@@ -144,19 +146,30 @@ let test_each_rotation_is_the_next_version env uri =
   with_fixture ~name:"rotation_versions" env uri @@ fun f ->
   get "atomic"
     (atomic f (fun tx ->
-         let* first = rotate f tx "1" in
+         let* first = make f tx "1" in
          let* second = rotate f tx "1" in
+         let* third = rotate f tx "1" in
          Alcotest.(check (list int))
-           "one, then two" [ 1; 2 ]
-           (List.map Key_version.to_int [ first; second ]);
+           "one, then two, then three" [ 1; 2; 3 ]
+           (List.map Key_version.to_int [ first; second; third ]);
          Ok ()));
-  Alcotest.(check (list int)) "both rows" [ 1; 2 ] (versions_of f "1")
+  Alcotest.(check (list int)) "three rows" [ 1; 2; 3 ] (versions_of f "1")
+
+(* A rotation never makes the first version: a scheduled one that meets an
+   off-boarded tenant does not bring its key back. *)
+let test_a_rotation_of_a_tenant_without_a_kek_makes_none env uri =
+  with_fixture ~name:"rotation_of_none" env uri @@ fun f ->
+  Alcotest.(check (result a_version error))
+    "not found"
+    (Error (Kms_error.Kek_not_found { tenant_id = "1"; key_version = None }))
+    (atomic f (fun tx -> rotate f tx "1"));
+  Alcotest.(check (list int)) "no rows" [] (versions_of f "1")
 
 let test_what_an_earlier_version_wrapped_still_unwraps env uri =
   with_fixture ~name:"unwrap_after_rotation" env uri @@ fun f ->
   get "atomic"
     (atomic f (fun tx ->
-         let* _ = rotate f tx "1" in
+         let* _ = make f tx "1" in
          let dek = key () in
          let* wrapped_v1 = Pg_kms.encrypt_dek f.kms tx ~tenant_id:"1" dek in
          let* _ = rotate f tx "1" in
@@ -168,7 +181,7 @@ let test_a_rewrap_moves_a_dek_to_the_current_version env uri =
   with_fixture ~name:"rewrap" env uri @@ fun f ->
   get "atomic"
     (atomic f (fun tx ->
-         let* _ = rotate f tx "1" in
+         let* _ = make f tx "1" in
          let dek = key () in
          let* wrapped_v1 = Pg_kms.encrypt_dek f.kms tx ~tenant_id:"1" dek in
          let* _ = rotate f tx "1" in
@@ -184,7 +197,7 @@ let test_deleting_the_keks_shreds_what_they_wrapped env uri =
   with_fixture ~name:"crypto_shredding" env uri @@ fun f ->
   get "atomic"
     (atomic f (fun tx ->
-         let* _ = rotate f tx "1" in
+         let* _ = make f tx "1" in
          let* wrapped = Pg_kms.encrypt_dek f.kms tx ~tenant_id:"1" (key ()) in
          let* () = Pg_kms.delete_kek f.kms tx ~tenant_id:"1" in
          Alcotest.check unwrapped "the key is gone"
@@ -198,8 +211,8 @@ let test_one_tenant_s_key_does_not_unwrap_another_s_dek env uri =
   with_fixture ~name:"tenant_isolation" env uri @@ fun f ->
   get "atomic"
     (atomic f (fun tx ->
-         let* _ = rotate f tx "1" in
-         let* _ = rotate f tx "2" in
+         let* _ = make f tx "1" in
+         let* _ = make f tx "2" in
          let dek = key () in
          let* wrapped = Pg_kms.encrypt_dek f.kms tx ~tenant_id:"1" dek in
          Alcotest.check unwrapped "its own tenant" (Ok dek)
@@ -224,7 +237,7 @@ let test_a_key_made_in_a_transaction_rolled_back_is_not_there env uri =
   with_fixture ~name:"rolled_back" env uri @@ fun f ->
   let outcome =
     atomic f (fun tx ->
-        let* _ = rotate f tx "1" in
+        let* _ = make f tx "1" in
         Error (Kms_error.Malformed "the command failed after the key was made"))
   in
   Alcotest.(check bool) "failed" true (Result.is_error outcome);
@@ -278,17 +291,18 @@ let test_two_first_contacts_at_once_share_one_key env uri =
 
 (* Two rotations at once: the second waits for the first to commit, then
    makes the version after it. *)
-let test_two_rotations_at_once_make_versions_one_and_two env uri =
+let test_two_rotations_at_once_make_the_next_two_versions env uri =
   with_fixture ~name:"rotations_at_once" env uri @@ fun f ->
+  ignore (get "make" (atomic f (fun tx -> make f tx "1")));
   let first, second =
     one_after_the_other f
       ~first:(fun tx -> rotate f tx "1")
       ~second:(fun tx -> rotate f tx "1")
   in
   Alcotest.(check (list int))
-    "one, then two" [ 1; 2 ]
+    "two, then three" [ 2; 3 ]
     (List.map Key_version.to_int [ first; second ]);
-  Alcotest.(check (list int)) "both rows" [ 1; 2 ] (versions_of f "1")
+  Alcotest.(check (list int)) "three rows" [ 1; 2; 3 ] (versions_of f "1")
 
 (* Opens the pool's connections, so that fibers started together reach the
    database together: a pool connects on demand, and connecting takes longer
@@ -345,7 +359,7 @@ let test_two_setups_at_once_agree env uri =
   let a, b = Eio.Fiber.pair setup setup in
   get "the first setup" a;
   get "the second setup" b;
-  ignore (get "atomic" (atomic f (fun tx -> rotate f tx "1")))
+  ignore (get "atomic" (atomic f (fun tx -> make f tx "1")))
 
 (* A row the Python port wrote, its first KEK for [tenant-1] under the master
    key [00 01 .. 1f], is read here, and unwraps the DEK it wrapped. *)
@@ -390,7 +404,7 @@ let test_a_key_the_python_port_wrote_is_read env uri =
 let test_a_master_key_of_the_wrong_length_is_refused_at_first_use env uri =
   with_fixture ~master_key:(Key.of_string "too short") ~name:"short_master" env uri
   @@ fun f ->
-  let outcome = atomic f (fun tx -> rotate f tx "1") in
+  let outcome = atomic f (fun tx -> make f tx "1") in
   Alcotest.(check bool)
     "malformed" true
     (match outcome with
@@ -454,6 +468,34 @@ let test_custody_makes_the_key_once_and_retires_its_versions env uri =
          Ok ()));
   Alcotest.(check (list int)) "the current version alone" [ 2 ] (versions_of f "1")
 
+(* A retirement keeps the latest version: a bound above it is refused and
+   retires nothing, where a bound at or below the oldest kept does nothing;
+   the tenant without a KEK is named. *)
+let test_a_retirement_above_the_latest_retires_nothing env uri =
+  with_fixture ~name:"retire_above" env uri @@ fun f ->
+  let retire tenant_id bound =
+    atomic f (fun tx ->
+        Pg_kms.retire_kek_versions_before f.kms tx ~tenant_id
+          (Key_version.of_int_exn bound))
+  in
+  get "atomic"
+    (atomic f (fun tx ->
+         let* _ = make f tx "1" in
+         let* _ = rotate f tx "1" in
+         Ok ()));
+  Alcotest.(check (result unit error))
+    "above the latest" (Error (Kms_error.No_key_of_version 3)) (retire "1" 3);
+  Alcotest.(check (list int)) "nothing retired" [ 1; 2 ] (versions_of f "1");
+  get "at the floor" (retire "1" 1);
+  get "below the floor" (retire "1" 0);
+  Alcotest.(check (list int)) "nothing retired either" [ 1; 2 ] (versions_of f "1");
+  get "the latest kept" (retire "1" 2);
+  Alcotest.(check (list int)) "the latest alone" [ 2 ] (versions_of f "1");
+  Alcotest.(check (result unit error))
+    "a tenant without a kek"
+    (Error (Kms_error.Kek_not_found { tenant_id = "2"; key_version = None }))
+    (retire "2" 1)
+
 let cases env uri =
   let case name test = Alcotest.test_case name `Quick (fun () -> test env uri) in
   [
@@ -462,6 +504,8 @@ let cases env uri =
     case "a generated dek is thirty two bytes and unwraps"
       test_a_generated_dek_is_thirty_two_bytes_and_unwraps;
     case "each rotation is the next version" test_each_rotation_is_the_next_version;
+    case "a rotation of a tenant without a kek makes none"
+      test_a_rotation_of_a_tenant_without_a_kek_makes_none;
     case "what an earlier version wrapped still unwraps"
       test_what_an_earlier_version_wrapped_still_unwraps;
     case "a rewrap moves a dek to the current version"
@@ -475,8 +519,8 @@ let cases env uri =
       test_a_key_made_in_a_transaction_rolled_back_is_not_there;
     case "two first contacts at once share one key"
       test_two_first_contacts_at_once_share_one_key;
-    case "two rotations at once make versions one and two"
-      test_two_rotations_at_once_make_versions_one_and_two;
+    case "two rotations at once make the next two versions"
+      test_two_rotations_at_once_make_the_next_two_versions;
     case "first contacts at once outside a transaction share one key"
       test_first_contacts_at_once_outside_a_transaction_share_one_key;
     case "two setups at once agree" test_two_setups_at_once_agree;
@@ -489,6 +533,8 @@ let cases env uri =
       test_a_context_binds_the_wrap_to_its_channel;
     case "custody makes the key once and retires its versions"
       test_custody_makes_the_key_once_and_retires_its_versions;
+    case "a retirement above the latest retires nothing"
+      test_a_retirement_above_the_latest_retires_nothing;
   ]
 
 let () =

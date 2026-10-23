@@ -16,8 +16,11 @@ let make algorithm bytes =
         | Ok key -> Ok { algorithm; bytes; parsed = Ed key }
         | Error _ -> malformed "not an Ed25519 public key")
   | Signature_algorithm.Ecdsa_p256 -> (
+      (* Whatever SEC1 form the point came in, it is held uncompressed, so
+         that a key's bytes are one form per algorithm, as a signature's
+         are. *)
       match P256.pub_of_octets bytes with
-      | Ok key -> Ok { algorithm; bytes; parsed = P key }
+      | Ok key -> Ok { algorithm; bytes = P256.pub_to_octets key; parsed = P key }
       | Error _ -> malformed "not a P-256 public key")
 
 let algorithm t = t.algorithm

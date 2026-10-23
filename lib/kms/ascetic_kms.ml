@@ -3,13 +3,16 @@
     For envelope encryption: a tenant has a key-encryption key, versioned and rotated, that
     wraps the data-encryption keys its data is sealed with; deleting the tenant's
     key-encryption keys is crypto-shredding. For what a tenant signs and authenticates:
-    digital signatures under the tenant's key of an algorithm, MACs under the tenant's key
-    for a purpose. And custody of the KEK, apart from wrapping with it. This library is
-    the model, {!Master_key}, {!Kek}, {!Wrapped_key}, {!Signing_key}, {!Mac_key}, over the
-    primitives, {!Cipher}, {!Algorithm}, {!Key}; the ports, {!Kms_port.S},
-    {!Key_custody.S}, {!Signing_port.S}, {!Mac_port.S}; {!Cached}, a cache in front of any
-    service; and {!In_memory_keys}, for the tests of what consumes the signing and MAC
-    ports. The adapters are sub-libraries: [ascetic_ddd.kms.pg] keeps keys in PostgreSQL
+    digital signatures under the tenant's key of an algorithm, at the latest version or at
+    one named, MACs under the tenant's key for a purpose, and the public halves of the
+    signing keys for verifiers outside the KMS. And custody of each kind of key, apart
+    from its use. This library is the model, {!Master_key}, {!Kek}, {!Wrapped_key},
+    {!Signing_key}, {!Public_keyring}, {!Mac_key}, over the primitives, {!Cipher},
+    {!Algorithm}, {!Key}; the use ports, {!Kms_port.S}, {!Signing_port.S},
+    {!Public_key_port.S}, {!Mac_port.S}, and the custody ports beside them,
+    {!Key_custody.S}, {!Signing_key_custody.S}, {!Mac_key_custody.S}; {!Cached}, a cache
+    in front of any service; and {!In_memory_keys}, for the tests of what consumes the
+    signing and MAC ports. The adapters are sub-libraries: [ascetic_ddd.kms.pg] keeps keys in PostgreSQL
     tables under a master key, [ascetic_ddd.kms.vault] leaves them to HashiCorp Vault
     Transit. See [README.md]. *)
 
@@ -21,10 +24,12 @@ module Algorithm = Algorithm
 module Aes256gcm = Aes256gcm
 module Kek = Kek
 module Kek_options = Kek_options
+module Key_options = Key_options
 module Master_key = Master_key
 module Signature_algorithm = Signature_algorithm
 module Signature = Signature
 module Public_key = Public_key
+module Public_keyring = Public_keyring
 module Signing_key = Signing_key
 module Key_label = Key_label
 module Mac = Mac
@@ -33,6 +38,9 @@ module Kms_error = Kms_error
 module Kms_port = Kms_port
 module Key_custody = Key_custody
 module Signing_port = Signing_port
+module Signing_key_custody = Signing_key_custody
+module Public_key_port = Public_key_port
 module Mac_port = Mac_port
+module Mac_key_custody = Mac_key_custody
 module Cached = Cached
 module In_memory_keys = In_memory_keys

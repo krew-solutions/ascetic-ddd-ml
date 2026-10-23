@@ -13,6 +13,16 @@ adapter, against a live database), `test/kms/vault/test_vault_transit.ml`
 and `test/kms/vault/test_vault_signing.ml` (the ports on a Vault dev
 server).
 
+Amended 2026-10-23 by ADR-0035: point 5 (`sign` makes the key,
+`sign_with_version` never does), point 6 (a refusal of `verify` is read on
+a `403` and a `500` as on a `400`, and what the read does not explain is
+the request's own fault) and the consequence "a public key is not served
+by the port", which `Public_key_port.S` supersedes. Amended the same day by
+ADR-0036: point 1, `rotate_signing_key` and `delete_signing_key` are on
+`Signing_key_custody.S` and `delete_mac_key` on `Mac_key_custody.S`, the
+use ports holding use alone; point 5, `sign` and `mac` make the key only
+without managed keys.
+
 ## Context
 
 `ascetic_ddd.kms` managed one kind of key: the key-encryption key of a

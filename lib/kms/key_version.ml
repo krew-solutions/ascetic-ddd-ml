@@ -18,6 +18,10 @@ let of_int_exn version =
 
 let to_int t = t
 
+let from_one t =
+  if t >= first then Ok t
+  else Error (Kms_error.Malformed "a key version is from one: version 0 is no key's")
+
 let next t =
   if t < max then Ok (t + 1)
   else Error (Kms_error.Malformed (Printf.sprintf "no key version after %d" t))

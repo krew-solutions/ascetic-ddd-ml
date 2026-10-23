@@ -113,14 +113,9 @@ module Make (K : Kms_port.S) = struct
           (K.decrypt_dek t.kms session ~tenant_id encrypted_dek)
 
   let generate_dek t session ~tenant_id = K.generate_dek t.kms session ~tenant_id
-  let rotate_kek t session ~tenant_id = K.rotate_kek t.kms session ~tenant_id
 
   let rewrap_dek t session ~tenant_id encrypted_dek =
     K.rewrap_dek t.kms session ~tenant_id encrypted_dek
-
-  (* Deletes through the service and forgets the tenant's keys held here. *)
-  let delete_kek t session ~tenant_id =
-    Result.map (fun () -> forget t ~tenant_id) (K.delete_kek t.kms session ~tenant_id)
 end
 
 module With_custody (K : sig
@@ -133,10 +128,16 @@ struct
   let create_kek t session ~tenant_id options =
     K.create_kek t.kms session ~tenant_id options
 
+  let rotate_kek t session ~tenant_id = K.rotate_kek t.kms session ~tenant_id
+
   (* What was unwrapped under a retired version is forgotten here as on a
      deletion: the cache's time to live would bound it otherwise. *)
   let retire_kek_versions_before t session ~tenant_id version =
     Result.map
       (fun () -> forget t ~tenant_id)
       (K.retire_kek_versions_before t.kms session ~tenant_id version)
+
+  (* Deletes through the service and forgets the tenant's keys held here. *)
+  let delete_kek t session ~tenant_id =
+    Result.map (fun () -> forget t ~tenant_id) (K.delete_kek t.kms session ~tenant_id)
 end

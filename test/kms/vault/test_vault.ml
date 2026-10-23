@@ -78,11 +78,15 @@ let is_refused_with status = function
   | Error (Kms_error.Vault { status = found; _ }) -> found = status
   | _ -> false
 
+(* Custody makes the tenant's first KEK; a rotation never does. *)
+let make kms tx ~tenant_id = Vault.create_kek kms tx ~tenant_id Kek_options.default
+let a_version = Alcotest.testable Key_version.pp Key_version.equal
+
 let test_a_dek_wrapped_after_a_rotation_unwraps f =
   let tenant_id = fst f.tenants in
   get "atomic"
     (atomic f (fun tx kms ->
-         let* _ = Vault.rotate_kek kms tx ~tenant_id in
+         let* _ = make kms tx ~tenant_id in
          let dek = key () in
          let* wrapped = Vault.encrypt_dek kms tx ~tenant_id dek in
          Alcotest.(check bool) "Vault's text" true (starts_with "vault:v1:" wrapped);
@@ -94,7 +98,7 @@ let test_a_generated_dek_is_thirty_two_bytes_and_unwraps f =
   let tenant_id = fst f.tenants in
   get "atomic"
     (atomic f (fun tx kms ->
-         let* _ = Vault.rotate_kek kms tx ~tenant_id in
+         let* _ = make kms tx ~tenant_id in
          let* dek, wrapped = Vault.generate_dek kms tx ~tenant_id in
          Alcotest.(check int) "thirty-two bytes" 32 (Key.length dek);
          Alcotest.check unwrapped "unwraps" (Ok dek)
@@ -105,18 +109,68 @@ let test_each_rotation_is_the_next_version f =
   let tenant_id = fst f.tenants in
   get "atomic"
     (atomic f (fun tx kms ->
-         let* first = Vault.rotate_kek kms tx ~tenant_id in
+         let* first = make kms tx ~tenant_id in
          let* second = Vault.rotate_kek kms tx ~tenant_id in
+         let* third = Vault.rotate_kek kms tx ~tenant_id in
          Alcotest.(check (list int))
-           "one, then two" [ 1; 2 ]
-           (List.map Key_version.to_int [ first; second ]);
+           "one, then two, then three" [ 1; 2; 3 ]
+           (List.map Key_version.to_int [ first; second; third ]);
+         Ok ()))
+
+let test_a_rotation_of_a_tenant_without_a_kek_makes_none f =
+  let tenant_id = fst f.tenants in
+  Alcotest.(check (result a_version error))
+    "not found"
+    (Error (Kms_error.Kek_not_found { tenant_id; key_version = None }))
+    (atomic f (fun tx kms -> Vault.rotate_kek kms tx ~tenant_id));
+  (* Not there, as a decryption under a key that is not there is read: an
+     encryption would make the key, Transit's [encrypt] being an upsert under
+     the root token, which is what managed keys and a holder's policy exist
+     to stop (ADR-0024). *)
+  Alcotest.check unwrapped "and the key is still not there"
+    (Error (Kms_error.Kek_not_found { tenant_id; key_version = None }))
+    (atomic f (fun tx kms -> Vault.decrypt_dek kms tx ~tenant_id "vault:v1:abc"))
+
+(* A retirement never lowers the floor, never passes the latest, and keeps
+   the latest version: a stale retirement after a real one changes nothing. *)
+let test_a_retirement_never_lowers_the_floor_nor_passes_the_latest f =
+  let tenant_id = fst f.tenants in
+  get "atomic"
+    (atomic f (fun tx kms ->
+         let retire bound =
+           Vault.retire_kek_versions_before kms tx ~tenant_id
+             (Key_version.of_int_exn bound)
+         in
+         let* _ = make kms tx ~tenant_id in
+         let* wrapped_v1 = Vault.encrypt_dek kms tx ~tenant_id (key ()) in
+         let* _ = Vault.rotate_kek kms tx ~tenant_id in
+         let* _ = Vault.rotate_kek kms tx ~tenant_id in
+         Alcotest.(check (result unit error))
+           "above the latest" (Error (Kms_error.No_key_of_version 4)) (retire 4);
+         let* () = retire 2 in
+         Alcotest.(check bool)
+           "what version one wrapped is gone" true
+           (match Vault.decrypt_dek kms tx ~tenant_id wrapped_v1 with
+           | Error (Kms_error.No_key_of_version 1) -> true
+           | _ -> false);
+         let* () = retire 1 in
+         Alcotest.(check bool)
+           "a stale retirement does not bring it back" true
+           (match Vault.decrypt_dek kms tx ~tenant_id wrapped_v1 with
+           | Error (Kms_error.No_key_of_version 1) -> true
+           | _ -> false);
+         let* () = retire 3 in
+         let* wrapped_v3 = Vault.encrypt_dek kms tx ~tenant_id (key ()) in
+         Alcotest.(check bool)
+           "the latest serves" true
+           (starts_with "vault:v3:" wrapped_v3);
          Ok ()))
 
 let test_what_an_earlier_version_wrapped_still_unwraps f =
   let tenant_id = fst f.tenants in
   get "atomic"
     (atomic f (fun tx kms ->
-         let* _ = Vault.rotate_kek kms tx ~tenant_id in
+         let* _ = make kms tx ~tenant_id in
          let dek = key () in
          let* wrapped_v1 = Vault.encrypt_dek kms tx ~tenant_id dek in
          let* _ = Vault.rotate_kek kms tx ~tenant_id in
@@ -128,7 +182,7 @@ let test_a_rewrap_moves_a_dek_to_the_current_version f =
   let tenant_id = fst f.tenants in
   get "atomic"
     (atomic f (fun tx kms ->
-         let* _ = Vault.rotate_kek kms tx ~tenant_id in
+         let* _ = make kms tx ~tenant_id in
          let dek = key () in
          let* wrapped_v1 = Vault.encrypt_dek kms tx ~tenant_id dek in
          let* _ = Vault.rotate_kek kms tx ~tenant_id in
@@ -144,7 +198,7 @@ let test_deleting_the_key_shreds_what_it_wrapped f =
   let tenant_id = fst f.tenants in
   get "atomic"
     (atomic f (fun tx kms ->
-         let* _ = Vault.rotate_kek kms tx ~tenant_id in
+         let* _ = make kms tx ~tenant_id in
          let* wrapped = Vault.encrypt_dek kms tx ~tenant_id (key ()) in
          let* () = Vault.delete_kek kms tx ~tenant_id in
          (* Transit's 400 for a gone key, read as such by one read of the key. *)
@@ -168,8 +222,8 @@ let test_one_tenant_s_key_does_not_unwrap_another_s_dek f =
   let one, other = f.tenants in
   get "atomic"
     (atomic f (fun tx kms ->
-         let* _ = Vault.rotate_kek kms tx ~tenant_id:one in
-         let* _ = Vault.rotate_kek kms tx ~tenant_id:other in
+         let* _ = make kms tx ~tenant_id:one in
+         let* _ = make kms tx ~tenant_id:other in
          let dek = key () in
          let* wrapped = Vault.encrypt_dek kms tx ~tenant_id:one dek in
          Alcotest.check unwrapped "its own tenant" (Ok dek)
@@ -287,6 +341,10 @@ let () =
                 test_a_generated_dek_is_thirty_two_bytes_and_unwraps;
               case "each rotation is the next version"
                 test_each_rotation_is_the_next_version;
+              case "a rotation of a tenant without a kek makes none"
+                test_a_rotation_of_a_tenant_without_a_kek_makes_none;
+              case "a retirement never lowers the floor nor passes the latest"
+                test_a_retirement_never_lowers_the_floor_nor_passes_the_latest;
               case "what an earlier version wrapped still unwraps"
                 test_what_an_earlier_version_wrapped_still_unwraps;
               case "a rewrap moves a dek to the current version"
